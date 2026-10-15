@@ -1,7 +1,10 @@
 package bot
 
 import (
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"narxoz-canvas-bot/internal/model"
 )
@@ -120,5 +123,38 @@ func TestCanvasStatusLine(t *testing.T) {
 		if got := canvasStatusLine(tt.ok, tt.errMsg); got != tt.want {
 			t.Errorf("canvasStatusLine(%v,%q) = %q, want %q", tt.ok, tt.errMsg, got, tt.want)
 		}
+	}
+}
+
+// TestProbeFailureHints checks that the message a user sees names the real
+// cause: a wrong CANVAS_PROXY, a timeout, or a generic connectivity problem.
+func TestProbeFailureHints(t *testing.T) {
+	proxyErr := errors.New(`canvas: GET https://canvas.narxoz.kz/api/v1/users/self: Get "https://canvas.narxoz.kz/api/v1/users/self": proxyconnect tcp: dial tcp: lookup host on 127.0.0.11:53: server misbehaving`)
+	timeoutErr := errors.New(`canvas: GET https://canvas.narxoz.kz/api/v1/users/self: context deadline exceeded`)
+	otherErr := errors.New("canvas: GET https://canvas.narxoz.kz/api/v1/courses: unexpected status 502: bad gateway")
+
+	tests := []struct {
+		name  string
+		err   error
+		want  string
+		notIn string
+	}{
+		{"proxy", proxyErr, "CANVAS_PROXY", "Ответа не было за"},
+		{"timeout", timeoutErr, "Ответа не было за 30s", ""},
+		{"other", otherErr, "Проверьте, что инстанс Canvas доступен", "CANVAS_PROXY"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := probeFailureText(tt.err, 30*time.Second)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("message must mention %q, got:\n%s", tt.want, got)
+			}
+			if tt.notIn != "" && strings.Contains(got, tt.notIn) {
+				t.Fatalf("message must not mention %q, got:\n%s", tt.notIn, got)
+			}
+			if !strings.Contains(got, "canvas.narxoz.kz") {
+				t.Fatalf("message must keep the original error, got:\n%s", got)
+			}
+		})
 	}
 }

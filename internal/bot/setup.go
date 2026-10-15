@@ -252,12 +252,21 @@ func (b *Bot) reportSyncError(chatID int64, err error) {
 
 // probeFailureText explains why a Canvas request did not answer, with a hint.
 func probeFailureText(err error, timeout time.Duration) string {
-	hint := "Проверьте, что инстанс Canvas доступен из сети, где запущен бот."
-	if canvasconn.IsTimeout(err) {
-		hint = "Ответа не было за " + canvasconn.TimeoutText(timeout) + ". " +
-			"Проверьте, что инстанс Canvas доступен из сети, где запущен бот, и не блокирует его."
+	switch {
+	case canvasconn.IsProxyError(err):
+		return "<code>" + html.EscapeString(err.Error()) + "</code>\n\n" +
+			"Не удалось подключиться к прокси из <code>CANVAS_PROXY</code>: проверьте, что там настоящий " +
+			"адрес прокси (не placeholder) и что прокси доступен с этой машины. " +
+			"Если прокси не нужен — оставьте <code>CANVAS_PROXY</code> пустым и перезапустите бота."
+	case canvasconn.IsTimeout(err):
+		return "<code>" + html.EscapeString(err.Error()) + "</code>\n\n" +
+			"Ответа не было за " + canvasconn.TimeoutText(timeout) + ". " +
+			"Проверьте, что инстанс Canvas доступен из сети, где запущен бот, и не блокирует его " +
+			"(при необходимости укажите <code>CANVAS_PROXY</code>)."
+	default:
+		return "<code>" + html.EscapeString(err.Error()) + "</code>\n\n" +
+			"Проверьте, что инстанс Canvas доступен из сети, где запущен бот."
 	}
-	return "<code>" + html.EscapeString(err.Error()) + "</code>\n\n" + hint
 }
 
 // --- small helpers ---

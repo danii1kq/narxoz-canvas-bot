@@ -435,6 +435,8 @@ func canvasconnErrorText(err error) string {
 		return "Canvas API не подключён"
 	case canvasconn.IsUnauthorized(err):
 		return "Canvas отклонил токен (401/403)"
+	case canvasconn.IsProxyError(err):
+		return "прокси CANVAS_PROXY недоступен: проверьте его адрес и доступность"
 	case canvasconn.IsTimeout(err):
 		return "Canvas не ответил вовремя"
 	default:

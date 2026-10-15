@@ -232,6 +232,19 @@ func IsTimeout(err error) bool {
 	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
 }
 
+// IsProxyError reports whether the request failed while dialling or resolving
+// the CANVAS_PROXY proxy (wrong address, placeholder left in .env, DNS down).
+func IsProxyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "proxyconnect") || strings.Contains(msg, "proxy url") {
+		return true
+	}
+	return strings.Contains(msg, "proxy") && (strings.Contains(msg, "lookup") || strings.Contains(msg, "dial tcp"))
+}
+
 // TimeoutText renders "за 30s" for a request timeout, for error hints.
 func TimeoutText(d time.Duration) string {
 	if d <= 0 {
