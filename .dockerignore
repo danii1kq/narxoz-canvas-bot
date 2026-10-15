@@ -1,0 +1,22 @@
+# Secrets and local state must never enter the build context / image layers.
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+bot.db*
+
+# Build artefacts and VCS metadata.
+bin/
+.git/
+.gitignore
+Makefile
+README.md
+prompt.md
+
+# Editor / OS noise.
+.idea/
+.vscode/
+*.exe
+*.tmp

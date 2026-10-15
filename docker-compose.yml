@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    image: narxoz-canvas-bot:latest
+    container_name: narxoz-canvas-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Database is persisted on a named volume.
+      DB_PATH: /data/bot.db
+      TZ: Asia/Almaty
+    volumes:
+      - bot-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:

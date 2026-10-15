@@ -1,0 +1,18 @@
+# local database & binaries
+/bot
+/bin/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# environment
+.env
+
+# go build/vet caches (not committed)
+*.test
+
+# editor / OS
+.idea/
+.vscode/
+.DS_Store
