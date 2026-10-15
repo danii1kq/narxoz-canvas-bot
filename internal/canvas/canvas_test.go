@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,6 +153,86 @@ func TestAssignmentsResolveOverrideDates(t *testing.T) {
 		if a.ID == 3 && a.DueAt != nil {
 			t.Fatalf("an assignment without any dates must stay undated")
 		}
+	}
+}
+
+// TestWithProxyRoutesCanvasThroughProxy runs a minimal proxy and checks that
+// Canvas calls go through it — the deployment escape hatch for hosts whose own
+// network cannot reach the Canvas instance. The fake Canvas is plain HTTP here,
+// so the proxy handles both forms: absolute-URI forwarding and CONNECT tunnels.
+func TestWithProxyRoutesCanvasThroughProxy(t *testing.T) {
+	var hits int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if r.Method == http.MethodConnect {
+			upstream, err := net.DialTimeout("tcp", r.Host, 5*time.Second)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				upstream.Close()
+				http.Error(w, "no hijacking", http.StatusInternalServerError)
+				return
+			}
+			client, _, err := hijacker.Hijack()
+			if err != nil {
+				upstream.Close()
+				return
+			}
+			_, _ = client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+			go func() { _, _ = io.Copy(upstream, client); upstream.Close() }()
+			_, _ = io.Copy(client, upstream)
+			client.Close()
+			return
+		}
+		// Plain HTTP proxying: the request carries an absolute URL.
+		outReq, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		outReq.Header = r.Header.Clone()
+		resp, err := http.DefaultTransport.RoundTrip(outReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxy.Close()
+
+	canvasSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":7,"name":"Z"}]`))
+	}))
+	defer canvasSrv.Close()
+
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	c := canvas.New(canvasSrv.URL, "tok", 1000, 10*time.Second, log, canvas.WithProxy(proxy.URL))
+	courses, err := c.Courses(context.Background())
+	if err != nil {
+		t.Fatalf("Courses through proxy: %v", err)
+	}
+	if len(courses) != 1 || courses[0].ID != 7 {
+		t.Fatalf("unexpected courses: %+v", courses)
+	}
+	if atomic.LoadInt32(&hits) == 0 {
+		t.Fatal("the request did not use the proxy")
+	}
+
+	// An invalid proxy URL must not break the client: it falls back to a direct
+	// connection instead of failing every call.
+	broken := canvas.New(canvasSrv.URL, "tok", 1000, 10*time.Second, log, canvas.WithProxy("://not a url"))
+	if _, err := broken.Courses(context.Background()); err != nil {
+		t.Fatalf("invalid proxy must fall back to a direct request: %v", err)
 	}
 }
 

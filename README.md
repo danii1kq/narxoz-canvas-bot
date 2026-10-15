@@ -88,6 +88,7 @@ or malformed.
 | `CANVAS_API_TOKEN`      | no       | *(unset)*                   | Canvas access token. Leave empty and connect Canvas with `/setup` in the chat. When set, it is authoritative for the background sync. |
 | `CANVAS_TOKEN_SECRET`   | no       | *(unset)*                   | Key that encrypts chat-entered tokens at rest (AES-256-GCM). Empty = base64 obfuscation only. |
 | `CANVAS_BASE_URL`       | no       | `https://canvas.narxoz.kz`  | Canvas instance URL.                                       |
+| `CANVAS_PROXY`          | no       | *(unset)*                   | Proxy for Canvas traffic only (`http://user:pass@host:port`, `socks5://host:1080`). For hosts that cannot reach Canvas directly. |
 | `TELEGRAM_CHAT_ID`      | no       | *(unset)*                   | Primary notification chat. If unset, every chat that pressed `/start` is notified. |
 | `TELEGRAM_API_ENDPOINT` | no       | *(unset)*                   | Self-hosted Bot API endpoint; must contain two `%s` (token, method). |
 | `POLL_INTERVAL`         | no       | `5m`                        | Sync frequency (bare numbers = minutes).                   |
@@ -410,6 +411,30 @@ app's settings or in `docker compose logs | grep canvas`. Typical causes:
   `curl -sS -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer x' \
    https://canvas.narxoz.kz/api/v1/users/self` (expect `401` for a bogus token);
 - a transient Canvas/network hiccup — press the refresh button in the app.
+
+**A VDS whose datacenter IP is blocked by the university.** Some hosts (and whole
+countries) cannot open `canvas.narxoz.kz` at all: connections hang until the
+timeout. Diagnose from the server:
+
+```bash
+curl -s https://ipinfo.io/json | head -c 200; echo                     # where the VDS actually is
+getent hosts canvas.narxoz.kz                                          # DNS answer
+curl -sS -o /dev/null -w 'http=%{http_code} connect=%{time_connect}s total=%{time_total}s\n' \
+  --max-time 20 -4 -H 'Authorization: Bearer x' https://canvas.narxoz.kz/api/v1/users/self
+curl -sS -o /dev/null -w 'http=%{http_code} total=%{time_total}s\n' --max-time 20 \
+  --resolve canvas.narxoz.kz:443:91.214.174.9 -H 'Authorization: Bearer x' https://canvas.narxoz.kz/api/v1/users/self
+```
+
+If the first command hangs while the resolved-IP one works, the problem is DNS;
+if both hang, the route to the Canvas IP is filtered. Options: move the bot to a
+VDS in Kazakhstan, run it on a network that can reach Canvas, or keep the VDS and
+route Canvas traffic through a proxy with a local IP:
+
+```dotenv
+# .env on the VDS
+CANVAS_PROXY=socks5://user:pass@kazakh-proxy-host:1080
+```
+`CANVAS_PROXY` affects Canvas only — Telegram keeps using the direct connection.
 
 **"Canvas отклонил токен (401/403)".** The token itself is wrong (not issued on
 `CANVAS_BASE_URL`, expired, or copied incompletely). Generate a new one and send

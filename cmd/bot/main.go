@@ -59,7 +59,7 @@ func run() error {
 	fm := notify.NewFormatter(cfg.TZ)
 	stats := runtime.New()
 	box := secrets.NewBox(cfg.TokenSecret)
-	cv := canvas.New(cfg.CanvasBaseURL, cfg.CanvasToken, 10, cfg.RequestTimeout, log)
+	cv := canvas.New(cfg.CanvasBaseURL, cfg.CanvasToken, 10, cfg.RequestTimeout, log, canvas.WithProxy(cfg.CanvasProxy))
 
 	// CANVAS_API_TOKEN is optional: when it is empty, restore the token a user
 	// connected from the chat/app so the background sync keeps working across

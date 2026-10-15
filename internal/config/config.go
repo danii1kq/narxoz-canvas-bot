@@ -25,6 +25,10 @@ type Config struct {
 
 	// Optional / defaulted.
 	TelegramChatID int64 // primary notification target; 0 means unset
+	// CanvasProxy routes Canvas traffic through an HTTP(S)/SOCKS5 proxy
+	// ("http://user:pass@host:port"). Needed when the bot's own network cannot
+	// reach the Canvas instance; Telegram traffic is unaffected.
+	CanvasProxy string
 	// TelegramAPIEndpoint overrides the Bot API root (self-hosted Bot API
 	// servers and tests); empty means https://api.telegram.org.
 	TelegramAPIEndpoint string
@@ -63,6 +67,7 @@ func Load() (Config, error) {
 
 	c.CanvasBaseURL = envOr("CANVAS_BASE_URL", "https://canvas.narxoz.kz")
 	c.CanvasBaseURL = strings.TrimRight(c.CanvasBaseURL, "/")
+	c.CanvasProxy = strings.TrimSpace(os.Getenv("CANVAS_PROXY"))
 
 	if c.PollInterval, err = envDuration("POLL_INTERVAL", 5*time.Minute); err != nil {
 		return c, err

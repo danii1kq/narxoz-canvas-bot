@@ -45,10 +45,26 @@ type Client struct {
 	maxRetries int
 }
 
+// Option customises a Client (used for deployment-specific transport setups).
+type Option func(*clientConfig)
+
+type clientConfig struct {
+	proxy string
+}
+
+// WithProxy routes Canvas calls through the given HTTP(S) or SOCKS5 proxy
+// ("http://user:pass@host:port", "socks5://host:1080"). It exists for hosts
+// whose own network cannot reach the Canvas instance — for example a VDS whose
+// datacenter IP is blocked by the university: a proxy with a local IP keeps the
+// deployment working. Telegram traffic is not affected.
+func WithProxy(rawURL string) Option {
+	return func(c *clientConfig) { c.proxy = strings.TrimSpace(rawURL) }
+}
+
 // New creates a Canvas client. requestsPerSecond throttles outbound calls and
 // requestTimeout bounds each HTTP request. The token may be empty; see
 // SetToken and ErrNoToken.
-func New(baseURL, token string, requestsPerSecond float64, requestTimeout time.Duration, log *slog.Logger) *Client {
+func New(baseURL, token string, requestsPerSecond float64, requestTimeout time.Duration, log *slog.Logger, opts ...Option) *Client {
 	if requestsPerSecond <= 0 {
 		requestsPerSecond = 10
 	}
@@ -59,8 +75,28 @@ func New(baseURL, token string, requestsPerSecond float64, requestTimeout time.D
 	if burst < 1 {
 		burst = 1
 	}
+	var cfg clientConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	limiter := rate.NewLimiter(rate.Every(time.Duration(float64(time.Second)/requestsPerSecond)), burst)
-	return newClient(baseURL, token, limiter, &http.Client{Timeout: requestTimeout}, log)
+	return newClient(baseURL, token, limiter, newHTTPClient(requestTimeout, cfg.proxy, log), log)
+}
+
+// newHTTPClient builds the transport: the environment proxy (HTTPS_PROXY) is
+// honoured by default, and an explicit proxy replaces it for Canvas only.
+func newHTTPClient(requestTimeout time.Duration, proxyURL string, log *slog.Logger) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			log.Error("canvas proxy URL is invalid, requests go out directly", "err", err)
+		} else {
+			transport.Proxy = http.ProxyURL(parsed)
+			log.Info("canvas requests use a proxy", "proxy", parsed.Host, "scheme", parsed.Scheme)
+		}
+	}
+	return &http.Client{Timeout: requestTimeout, Transport: transport}
 }
 
 // newClient assembles a client from already-built parts.
