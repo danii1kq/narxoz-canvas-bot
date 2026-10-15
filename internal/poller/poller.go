@@ -136,6 +136,14 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	p.mu.Lock()
 	p.alertSent = false
 	p.mu.Unlock()
+	if p.cfg.CanvasToken == "" {
+		// The most recently connected chat token drives this sync, so a
+		// successful poll proves it works (it may have been stored while
+		// Canvas was unreachable).
+		if err := p.store.SetLatestChatTokenVerified(true); err != nil {
+			p.log.Warn("could not mark chat token verified", "err", err)
+		}
+	}
 
 	events, next, muted, isSeed, perr := p.computeAndPersist(current, courses, now)
 	if perr != nil {

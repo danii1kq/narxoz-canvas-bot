@@ -1,0 +1,24 @@
+# HTTPS entry point for the Telegram Mini App.
+#
+# Caddy obtains and renews the Let's Encrypt certificate for $WEBAPP_DOMAIN
+# automatically (HTTP-01 challenge, so port 80 must be reachable from the
+# internet) and proxies everything to the bot container, which also serves the
+# Mini App and its JSON API on :8080.
+
+{$WEBAPP_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy bot:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

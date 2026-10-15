@@ -226,10 +226,12 @@ func (c *Client) do(ctx context.Context, fullURL string) ([]byte, string, error)
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			lastErr = err
 			if ctx.Err() != nil {
-				return nil, "", ctx.Err()
+				return nil, "", fmt.Errorf("canvas: GET %s: %w", fullURL, ctx.Err())
 			}
+			// Keep the URL and the transport cause in the error: it is shown
+			// to the user when a chat setup probe fails.
+			lastErr = fmt.Errorf("canvas: GET %s: %w", fullURL, err)
 			c.log.Warn("canvas request failed, retrying", "url", fullURL, "err", err, "attempt", attempt+1)
 			continue
 		}

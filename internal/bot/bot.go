@@ -10,38 +10,28 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"narxoz-canvas-bot/internal/canvas"
+	"narxoz-canvas-bot/internal/canvasconn"
 	"narxoz-canvas-bot/internal/model"
 	"narxoz-canvas-bot/internal/notify"
 	"narxoz-canvas-bot/internal/runtime"
-	"narxoz-canvas-bot/internal/secrets"
 	"narxoz-canvas-bot/internal/store"
 )
 
-// Syncer refreshes the Canvas dataset on demand. It is implemented by the
-// poller; the bot only needs it for the "refresh now" button and /setup.
-type Syncer interface {
-	PollOnce(ctx context.Context) error
-}
-
-// Bot wires Telegram updates to the store and Canvas client. All functionality
-// is reachable both via reply-keyboard buttons and text commands.
+// Bot wires Telegram updates to the store and the Canvas connection. All
+// functionality is reachable via commands; the interactive lists live in the
+// Mini App when one is configured.
 type Bot struct {
 	tg          *notify.Client
 	store       *store.Store
-	canvas      *canvas.Client
-	syncer      Syncer
-	box         *secrets.Box
+	conn        *canvasconn.Conn
 	fm          notify.Formatter
 	stats       *runtime.Stats
 	log         *slog.Logger
 	loc         *time.Location
 	defaultChat int64
 
-	// envToken is CANVAS_API_TOKEN as read from the environment. When it is
-	// non-empty it is authoritative for the background sync, and tokens
-	// entered in a chat never replace it.
-	envToken   string
+	// appURL is the public Mini App address; empty when the app is disabled.
+	appURL     string
 	reqTimeout time.Duration
 
 	pendMu sync.Mutex
@@ -51,35 +41,30 @@ type Bot struct {
 
 // New constructs a Bot.
 //
-// box seals Canvas tokens before they are persisted; envToken is the
-// CANVAS_API_TOKEN value (empty when the token comes from the chat); syncer
-// performs on-demand Canvas refreshes.
+// conn owns the Canvas token and sync state shared with the Mini App; appURL
+// is the public address of that app (empty when it is not configured).
 func New(
 	tg *notify.Client,
 	st *store.Store,
-	cv *canvas.Client,
-	syncer Syncer,
-	box *secrets.Box,
+	conn *canvasconn.Conn,
 	fm notify.Formatter,
 	stats *runtime.Stats,
 	log *slog.Logger,
 	loc *time.Location,
 	defaultChat int64,
-	envToken string,
+	appURL string,
 	reqTimeout time.Duration,
 ) *Bot {
 	return &Bot{
 		tg:          tg,
 		store:       st,
-		canvas:      cv,
-		syncer:      syncer,
-		box:         box,
+		conn:        conn,
 		fm:          fm,
 		stats:       stats,
 		log:         log,
 		loc:         loc,
 		defaultChat: defaultChat,
-		envToken:    strings.TrimSpace(envToken),
+		appURL:      strings.TrimRight(strings.TrimSpace(appURL), "/"),
 		reqTimeout:  reqTimeout,
 		pending:     map[int64]bool{},
 	}
@@ -227,7 +212,7 @@ func (b *Bot) onMessage(m *tgbotapi.Message) {
 	}
 
 	// Unknown free-form text.
-	if b.canvasConfigured(chatID) {
+	if b.conn.Configured(chatID) {
 		b.tg.SendHTML(chatID, "Нажмите кнопку меню ниже 👇 или отправьте /help.")
 		return
 	}

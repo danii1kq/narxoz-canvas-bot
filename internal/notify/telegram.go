@@ -124,6 +124,29 @@ func (c *Client) DeleteMessage(chatID int64, messageID int) error {
 	return err
 }
 
+// SetMenuButton installs (or replaces) the Mini App button next to the message
+// input. chatID 0 applies it to every private chat.
+//
+// tgbotapi v5 has no typed helper for menu buttons, so the Bot API method is
+// called directly.
+func (c *Client) SetMenuButton(chatID int64, text, appURL string) error {
+	menu := map[string]any{
+		"type":    "web_app",
+		"text":    text,
+		"web_app": map[string]any{"url": appURL},
+	}
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatID)
+	if err := params.AddInterface("menu_button", menu); err != nil {
+		return err
+	}
+	_, err := c.api.MakeRequest("setChatMenuButton", params)
+	if err != nil && isTolerated(err) {
+		return nil
+	}
+	return err
+}
+
 // AnswerCallback dismisses the loading indicator on a pressed inline button.
 func (c *Client) AnswerCallback(id, text string, alert bool) {
 	cb := tgbotapi.NewCallback(id, text)

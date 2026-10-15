@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff">
+<title>Canvas</title>
+<script>
+  /* Apply the colour scheme before first paint so the app never flashes the
+     wrong theme. Telegram's colourScheme (when present) takes over right after
+     the SDK loads. */
+  (function () {
+    try {
+      var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.scheme = dark ? "dark" : "light";
+    } catch (e) {
+      document.documentElement.dataset.scheme = "light";
+    }
+  })();
+</script>
+<link rel="stylesheet" href="/styles.css">
+<script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar__row">
+    <h1 class="topbar__title">Canvas</h1>
+    <button class="iconbtn" id="refresh" type="button" aria-label="Обновить из Canvas">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5V2L7 6l5 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z"/></svg>
+    </button>
+  </div>
+  <div class="topbar__status" id="status"></div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<main class="content" id="content" aria-live="polite"></main>
+
+<nav class="tabbar" aria-label="Разделы">
+  <button class="tab" type="button" data-tab="tasks" aria-current="page">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11v2H9zM9 11h11v2H9zM9 16h11v2H9zM4 5.5 5.5 7 8 4.5 8.7 5.2 5.5 8.4 3.3 6.2z"/></svg>
+    <span>Задания</span>
+  </button>
+  <button class="tab" type="button" data-tab="courses">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v2H4zM4 9h16v2H4zM4 13h10v2H4zM4 17h10v2H4z"/></svg>
+    <span>Курсы</span>
+  </button>
+  <button class="tab" type="button" data-tab="settings">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z"/><path d="m20 12-.9-1.2.4-1.4-1.4-1.4-1.4.4L15.5 8l-.3-1.5h-2l-.3 1.5-1.2.4-1.4-.4L8.9 9.4l.4 1.4L8.4 12l.9 1.2-.4 1.4 1.4 1.4 1.4-.4 1.2.9.3 1.5h2l.3-1.5 1.2-.9 1.4.4 1.4-1.4-.4-1.4Z" opacity=".35"/></svg>
+    <span>Настройки</span>
+  </button>
+</nav>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet__backdrop" data-action="close-sheet"></div>
+  <section class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet__grip"></div>
+    <div id="sheet-body"></div>
+  </section>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+</body>
+</html>

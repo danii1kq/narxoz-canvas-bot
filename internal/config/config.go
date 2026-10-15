@@ -35,6 +35,16 @@ type Config struct {
 	LogLevel            string
 	DBPath              string
 	RequestTimeout      time.Duration
+
+	// Telegram Mini App. WebAppURL is the public HTTPS address of the app
+	// (e.g. https://narxoz-bot.duckdns.org) used for the chat menu button;
+	// when empty the app is not advertised in Telegram. WebAppAddr is the
+	// local listen address behind the HTTPS reverse proxy.
+	WebAppURL  string
+	WebAppAddr string
+	// WebAppDevChatID authenticates a browser as this chat without Telegram
+	// initData. Development only: never set it on a public deployment.
+	WebAppDevChatID int64
 }
 
 // Load reads configuration from the environment and validates it.
@@ -81,6 +91,20 @@ func Load() (Config, error) {
 	c.TZ = loadLocation(envOr("TZ", "Asia/Almaty"))
 	c.LogLevel = envOr("LOG_LEVEL", "info")
 	c.DBPath = envOr("DB_PATH", "./bot.db")
+
+	c.WebAppURL = strings.TrimRight(strings.TrimSpace(os.Getenv("WEBAPP_URL")), "/")
+	c.WebAppAddr = envOr("WEBAPP_ADDR", ":8080")
+	if v := strings.TrimSpace(os.Getenv("WEBAPP_DEV_CHAT_ID")); v != "" {
+		id, perr := strconv.ParseInt(v, 10, 64)
+		if perr != nil {
+			return c, fmt.Errorf("WEBAPP_DEV_CHAT_ID must be an integer, got %q", v)
+		}
+		c.WebAppDevChatID = id
+	}
+	// Telegram only opens Mini Apps over HTTPS.
+	if c.WebAppURL != "" && !strings.HasPrefix(c.WebAppURL, "https://") {
+		return c, fmt.Errorf("WEBAPP_URL must start with https:// (got %q)", c.WebAppURL)
+	}
 
 	if c.PollInterval < 10*time.Second {
 		return c, fmt.Errorf("POLL_INTERVAL must be at least 10s")

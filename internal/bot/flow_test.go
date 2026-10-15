@@ -17,6 +17,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"narxoz-canvas-bot/internal/canvas"
+	"narxoz-canvas-bot/internal/canvasconn"
 	"narxoz-canvas-bot/internal/config"
 	"narxoz-canvas-bot/internal/notify"
 	"narxoz-canvas-bot/internal/poller"
@@ -99,7 +100,8 @@ func TestSetupFlowConnectsCanvasFromChat(t *testing.T) {
 	fm := notify.NewFormatter(time.UTC)
 	stats := runtime.New()
 	p := poller.New(cfg, cv, st, tg, fm, stats, log)
-	b := New(tg, st, cv, p, box, fm, stats, log, time.UTC, 0, "", 10*time.Second)
+	conn := canvasconn.New(cv, st, box, p, "", log)
+	b := New(tg, st, conn, fm, stats, log, time.UTC, 0, "", 10*time.Second)
 
 	// 1) /setup explains how to obtain a token and waits for it.
 	b.handle(msgUpdate(chatID, 11, "/setup"))
@@ -151,6 +153,9 @@ func TestSetupFlowConnectsCanvasFromChat(t *testing.T) {
 	plain, err := box.Open(row.Token)
 	if err != nil || plain != goodToken {
 		t.Fatalf("stored token did not round-trip: %q, %v", plain, err)
+	}
+	if !row.Verified {
+		t.Fatal("a token confirmed by the live probe must be stored as verified")
 	}
 
 	// 4) Live Canvas data landed in the store, so the views are real.
@@ -229,7 +234,7 @@ func TestRefreshWithoutTokenPromptsSetup(t *testing.T) {
 	cv := canvas.New("https://canvas.invalid", "", 1000, time.Second, log)
 	fm := notify.NewFormatter(time.UTC)
 	stats := runtime.New()
-	b := New(tg, st, cv, stubSyncer{}, secrets.NewBox(""), fm, stats, log, time.UTC, 0, "", time.Second)
+	b := New(tg, st, canvasconn.New(cv, st, secrets.NewBox(""), stubSyncer{}, "", log), fm, stats, log, time.UTC, 0, "", time.Second)
 
 	b.handle(msgUpdate(42, 1, btnAssignments))
 	if !ft.anyContains("Canvas API не подключён") {
@@ -244,6 +249,73 @@ func TestRefreshWithoutTokenPromptsSetup(t *testing.T) {
 type stubSyncer struct{}
 
 func (stubSyncer) PollOnce(ctx context.Context) error { return canvas.ErrNoToken }
+
+// TestUnreachableCanvasKeepsToken checks that a probe which fails because
+// Canvas is unreachable (not because the token is bad) still stores the token
+// — marked as unverified — instead of asking the user to paste it again.
+func TestUnreachableCanvasKeepsToken(t *testing.T) {
+	const token = "1234~AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	const chatID = int64(7001)
+
+	ft := &fakeTelegram{}
+	tgSrv := httptest.NewServer(http.HandlerFunc(ft.serveHTTP))
+	defer tgSrv.Close()
+
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	tg, err := notify.NewTelegram("test-token", tgSrv.URL+"/bot%s/%s", log)
+	if err != nil {
+		t.Fatalf("fake telegram: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	// Nothing listens on port 1: the dial fails and the 1s context expires.
+	cv := canvas.New("http://127.0.0.1:1", "", 1000, time.Second, log)
+	box := secrets.NewBox("test-secret")
+	fm := notify.NewFormatter(time.UTC)
+	stats := runtime.New()
+	b := New(tg, st, canvasconn.New(cv, st, box, stubSyncer{}, "", log), fm, stats, log, time.UTC, 0, "", time.Second)
+
+	b.handle(msgUpdate(chatID, 21, "/setup"))
+	b.handle(msgUpdate(chatID, 22, token))
+
+	sent := strings.Join(ft.sentTexts(), "\n---\n")
+	if !strings.Contains(sent, "Canvas не ответил на проверку") {
+		t.Fatalf("expected an unreachable-Canvas notice, got <<<%s>>>", sent)
+	}
+	if !strings.Contains(sent, "Токен <b>сохранён</b>") {
+		t.Fatalf("the notice must say the token was stored, got <<<%s>>>", sent)
+	}
+	if ft.anyContains("Canvas отклонил токен") {
+		t.Fatal("a network failure must not be reported as a rejected token")
+	}
+	if !ft.deletedMessage(22) {
+		t.Fatal("message with the token must be deleted")
+	}
+	if b.isPending(chatID) {
+		t.Fatal("the dialog must be closed once the token is stored")
+	}
+	if !cv.HasToken() {
+		t.Fatal("an unverified token must still be applied so the background sync can use it")
+	}
+
+	row, ok := st.ChatToken(chatID)
+	if !ok {
+		t.Fatal("token must be persisted even when the probe could not reach Canvas")
+	}
+	if row.Verified {
+		t.Fatal("a token that was never confirmed must be stored unverified")
+	}
+	if plain, err := box.Open(row.Token); err != nil || plain != token {
+		t.Fatalf("stored token did not round-trip: %q, %v", plain, err)
+	}
+	if line := b.conn.StateLine(chatID); !strings.Contains(line, "ждёт проверки") {
+		t.Fatalf("state line should mention a pending check, got %q", line)
+	}
+}
 
 // --- fakes ---
 

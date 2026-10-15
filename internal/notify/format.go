@@ -113,9 +113,6 @@ func (f Formatter) FormatEvent(e model.Event) string {
 		b.WriteString("📤 <b>Работа отправлена</b>\n\n")
 		writeCourse(&b, e.Course)
 		b.WriteString("📝 " + esc(a.Name) + "\n")
-		if a.Late() {
-			b.WriteString("⚠️ Сдано с опозданием\n")
-		}
 		b.WriteString("⏰ Отправлено: " + f.DateTime(a.SubmittedAt) + "\n")
 		if u := link(a.HTMLURL); u != "" {
 			b.WriteString("\n" + u + "\n")
@@ -167,9 +164,6 @@ func (f Formatter) Line(a model.Assignment, course string, now time.Time) string
 		b.WriteString("    ⏰ " + f.DateTime(a.DueAt))
 	} else {
 		b.WriteString("    ⏰ без дедлайна")
-	}
-	if a.Submitted() && a.Late() {
-		b.WriteString(" · сдано с опозданием")
 	}
 	if a.Score != nil {
 		b.WriteString("\n    🎯 " + fmtFloat(a.Score) + "/" + fmtFloat(a.Points) + " · " + esc(fmtGrade(a.Grade)))

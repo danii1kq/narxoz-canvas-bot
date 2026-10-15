@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"html"
 	"strconv"
 	"strings"
@@ -10,7 +9,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"narxoz-canvas-bot/internal/canvas"
+	"narxoz-canvas-bot/internal/canvasconn"
 	"narxoz-canvas-bot/internal/model"
 )
 
@@ -100,9 +99,9 @@ func (b *Bot) renderCoursesIndex(page int) (string, tgbotapi.InlineKeyboardMarku
 // renderView renders one of the data views (or the courses index / settings).
 func (b *Bot) renderView(chatID int64, view string, param int64, page int) (string, tgbotapi.InlineKeyboardMarkup) {
 	if view == "settings" {
-		return b.renderSettings()
+		return b.renderSettings(chatID)
 	}
-	if !b.canvasConfigured(chatID) {
+	if !b.conn.Configured(chatID) {
 		return b.renderNoToken()
 	}
 	if view == "courses" {
@@ -161,7 +160,65 @@ func (b *Bot) renderView(chatID int64, view string, param int64, page int) (stri
 
 // send/edit wrappers.
 
+// appEnabled reports whether the Mini App is configured for this deployment.
+// When it is, interactive lists are not sent to the chat: the chat stays a
+// notification channel and the Open button leads to the app.
+func (b *Bot) appEnabled() bool { return b.appURL != "" }
+
+// appHint renders the compact "look in the app" reply with a text summary.
+func (b *Bot) appHint(title string) string {
+	now := time.Now().UTC()
+	items := b.activeAssignments()
+	var missing, overdue, graded int
+	for _, a := range items {
+		switch {
+		case IsOverdue(a, now):
+			overdue++
+		case IsMissing(a, now):
+			missing++
+		}
+		if IsGraded(a) {
+			graded++
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("<b>" + title + "</b>\n\n")
+	sb.WriteString("📚 Курсов: " + strconv.Itoa(len(b.activeCourses())) +
+		" · 📝 Заданий: " + strconv.Itoa(len(items)) + "\n")
+	sb.WriteString("⚠️ Не сдано: " + strconv.Itoa(missing) +
+		" · ⛔ Просрочено: " + strconv.Itoa(overdue) +
+		" · ✅ Оценок: " + strconv.Itoa(graded) + "\n\n")
+	sb.WriteString("📱 Список — в приложении: кнопка <b>Open</b> у поля ввода.")
+	return sb.String()
+}
+
+// viewTitle maps a view id to its human title.
+func viewTitle(view string) string {
+	switch view {
+	case "assign":
+		return "📋 Задания"
+	case "missing":
+		return "⚠️ Не сдано"
+	case "overdue":
+		return "⛔ Просрочено"
+	case "grades":
+		return "📝 Оценки"
+	case "courses":
+		return "📚 Курсы"
+	case "course":
+		return "📚 Задания курса"
+	case "settings":
+		return "⚙️ Настройки"
+	default:
+		return "📊 Данные"
+	}
+}
+
 func (b *Bot) sendView(chatID int64, view string, param int64, page int) {
+	if b.appEnabled() {
+		b.tg.SendHTML(chatID, b.appHint(viewTitle(view)))
+		return
+	}
 	text, kb := b.renderView(chatID, view, param, page)
 	_ = b.tg.SendInline(chatID, text, kb)
 }
@@ -172,19 +229,23 @@ func (b *Bot) editView(chatID int64, msgID int, view string, param int64, page i
 }
 
 func (b *Bot) sendCourses(chatID int64) {
+	if b.appEnabled() {
+		b.tg.SendHTML(chatID, b.appHint(viewTitle("courses")))
+		return
+	}
 	text, kb := b.renderView(chatID, "courses", 0, 0)
 	_ = b.tg.SendInline(chatID, text, kb)
 }
 
 // renderSettings builds the settings menu: Canvas connection, per-course mute
 // toggles, reminder interval cycle and the Canvas connectivity check.
-func (b *Bot) renderSettings() (string, tgbotapi.InlineKeyboardMarkup) {
+func (b *Bot) renderSettings(chatID int64) (string, tgbotapi.InlineKeyboardMarkup) {
 	courses := b.activeCourses()
 	lead := b.store.GetLeadHours(24)
 
 	var sb strings.Builder
 	sb.WriteString("<b>⚙️ Настройки</b>\n\n")
-	sb.WriteString("🔑 Canvas API: " + b.canvasStateLine() + "\n\n")
+	sb.WriteString("🔑 Canvas API: " + b.conn.StateLine(chatID) + "\n\n")
 	sb.WriteString("Нажмите курс, чтобы включить/выключить уведомления по нему (🔔/🔕).\n")
 
 	var rows [][]tgbotapi.InlineKeyboardButton
@@ -228,7 +289,7 @@ func (b *Bot) doInterval(chatID int64, msgID int, cbID string) {
 		b.tg.AnswerCallback(cbID, "Не удалось сохранить настройку", true)
 		return
 	}
-	text, kb := b.renderSettings()
+	text, kb := b.renderSettings(chatID)
 	_ = b.tg.EditInline(chatID, msgID, text, kb)
 	b.tg.AnswerCallback(cbID, "⏰ Напоминание будет за "+strconv.Itoa(next)+" ч", false)
 }
@@ -240,7 +301,7 @@ func (b *Bot) doToggleMute(chatID int64, msgID int, courseID int64, cbID string)
 		b.tg.AnswerCallback(cbID, "Не удалось изменить настройку курса", true)
 		return
 	}
-	text, kb := b.renderSettings()
+	text, kb := b.renderSettings(chatID)
 	_ = b.tg.EditInline(chatID, msgID, text, kb)
 	if muted {
 		b.tg.AnswerCallback(cbID, "🔕 Уведомления курса выключены", false)
@@ -253,7 +314,7 @@ func (b *Bot) doToggleMute(chatID int64, msgID int, courseID int64, cbID string)
 func (b *Bot) doPing(chatID int64, msgID int, cbID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.requestTimeout())
 	defer cancel()
-	u, err := b.clientFor(chatID).User(ctx)
+	u, err := b.conn.Client(chatID).User(ctx)
 	switch {
 	case err == nil:
 		name := u.Name
@@ -262,10 +323,10 @@ func (b *Bot) doPing(chatID int64, msgID int, cbID string) {
 		}
 		b.stats.SetCanvasOK(true, "", time.Now().UTC())
 		b.tg.AnswerCallback(cbID, "✅ Токен действителен. Пользователь: "+name, true)
-	case errors.Is(err, canvas.ErrNoToken):
+	case canvasconn.IsNoToken(err):
 		b.stats.SetCanvasOK(false, "no token", time.Now().UTC())
 		b.tg.AnswerCallback(cbID, "🔑 Canvas не подключён. Нажмите /setup", true)
-	case errors.Is(err, canvas.ErrUnauthorized):
+	case canvasconn.IsUnauthorized(err):
 		b.stats.SetCanvasOK(false, "unauthorized", time.Now().UTC())
 		b.tg.AnswerCallback(cbID, "🔴 Токен Canvas недействителен (401/403). Обновите: /setup", true)
 	default:
@@ -276,14 +337,14 @@ func (b *Bot) doPing(chatID int64, msgID int, cbID string) {
 
 // doSync asks Canvas for fresh data and re-renders the current view in place.
 func (b *Bot) doSync(chatID int64, msgID int, cbID, view string, param int64, page int) {
-	if !b.ensureSyncToken(chatID) {
+	if !b.conn.EnsureSyncToken(chatID) {
 		b.tg.AnswerCallback(cbID, "🔑 Сначала подключите Canvas API", true)
 		return
 	}
 	b.tg.AnswerCallback(cbID, "⏳ Опрашиваю Canvas…", false)
 	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
 	defer cancel()
-	if err := b.syncer.PollOnce(ctx); err != nil {
+	if err := b.conn.Refresh(ctx, chatID); err != nil {
 		b.tg.AnswerCallback(cbID, "🔴 "+shortErr(err), true)
 		return
 	}
@@ -293,18 +354,41 @@ func (b *Bot) doSync(chatID int64, msgID int, cbID, view string, param int64, pa
 }
 
 func (b *Bot) sendSettings(chatID int64) {
-	text, kb := b.renderSettings()
+	if b.appEnabled() {
+		b.tg.SendHTML(chatID, b.settingsHint(chatID))
+		return
+	}
+	text, kb := b.renderSettings(chatID)
 	_ = b.tg.SendInline(chatID, text, kb)
 }
 
+// settingsHint is the compact settings summary sent when the Mini App owns the
+// interactive controls.
+func (b *Bot) settingsHint(chatID int64) string {
+	var muted int
+	all, _ := b.store.LoadCourses(false)
+	for _, c := range all {
+		if c.Active && c.Muted {
+			muted++
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString("<b>⚙️ Настройки</b>\n\n")
+	sb.WriteString("🔑 Canvas API: " + b.conn.StateLine(chatID) + "\n")
+	sb.WriteString("⏰ Напоминание: за " + strconv.Itoa(b.store.GetLeadHours(24)) + " ч\n")
+	sb.WriteString("🔕 Курсов без уведомлений: " + strconv.Itoa(muted) + "\n\n")
+	sb.WriteString("📱 Мьюты, интервал и подключение Canvas — в приложении: кнопка <b>Open</b>.")
+	return sb.String()
+}
+
 func (b *Bot) editSettings(chatID int64, msgID int) {
-	text, kb := b.renderSettings()
+	text, kb := b.renderSettings(chatID)
 	_ = b.tg.EditInline(chatID, msgID, text, kb)
 }
 
 // searchCourse finds courses (and, as a fallback, assignments) by substring.
 func (b *Bot) searchCourse(chatID int64, query string) {
-	if !b.canvasConfigured(chatID) {
+	if !b.conn.Configured(chatID) {
 		b.promptSetup(chatID)
 		return
 	}
@@ -319,9 +403,24 @@ func (b *Bot) searchCourse(chatID int64, query string) {
 
 	switch {
 	case len(matches) == 1:
+		if b.appEnabled() {
+			b.tg.SendHTML(chatID, "📚 Найден курс: <b>"+html.EscapeString(matches[0].Name)+"</b>\n\n"+
+				"Задания курса — в приложении: кнопка <b>Open</b>.")
+			return
+		}
 		text, kb := b.renderView(chatID, "course", matches[0].ID, 0)
 		_ = b.tg.SendInline(chatID, text, kb)
 	case len(matches) > 1:
+		if b.appEnabled() {
+			var sb strings.Builder
+			sb.WriteString("🔎 <b>Найдено курсов:</b> " + strconv.Itoa(len(matches)) + "\n")
+			for _, c := range matches {
+				sb.WriteString("• " + html.EscapeString(c.Name) + "\n")
+			}
+			sb.WriteString("\nЗадания курса — в приложении: кнопка <b>Open</b>.")
+			b.tg.SendHTML(chatID, strings.TrimRight(sb.String(), "\n"))
+			return
+		}
 		var rows [][]tgbotapi.InlineKeyboardButton
 		for _, c := range matches {
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -430,7 +529,7 @@ func (b *Bot) sendStatus(chatID int64) {
 	var sb strings.Builder
 	sb.WriteString("📊 <b>Статус</b>\n\n")
 	sb.WriteString("🔗 Canvas: " + status + "\n")
-	sb.WriteString("🔑 Токен: " + b.canvasStateLine() + "\n")
+	sb.WriteString("🔑 Токен: " + b.conn.StateLine(chatID) + "\n")
 	sb.WriteString("🕒 Последний опрос: " + lastPoll + "\n")
 	sb.WriteString("📚 Активных курсов: " + strconv.Itoa(len(courses)) + " (🔕 " + strconv.Itoa(muted) + ")\n")
 	sb.WriteString("📝 Отслеживается заданий: " + strconv.Itoa(len(asgs)) + "\n")

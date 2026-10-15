@@ -2,15 +2,16 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"html"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"narxoz-canvas-bot/internal/canvas"
+	"narxoz-canvas-bot/internal/canvasconn"
 	"narxoz-canvas-bot/internal/model"
+	"narxoz-canvas-bot/internal/store"
 )
 
 // setupPrompt explains how to obtain a Canvas access token and what to do
@@ -30,9 +31,9 @@ const minTokenLen = 10
 // startSetup asks the chat to paste its Canvas API token.
 func (b *Bot) startSetup(chatID int64) {
 	b.setPending(chatID, true)
-	if tok, u, ok := b.chatToken(chatID); ok {
+	if tok, row, ok := b.conn.ChatToken(chatID); ok {
 		b.tg.SendHTML(chatID, "🔁 Сейчас подключён токен <code>"+html.EscapeString(maskToken(tok))+
-			"</code> ("+html.EscapeString(canvasUserLabel(u))+").\n\n"+setupPrompt+
+			"</code> ("+html.EscapeString(canvasUserLabel(chatTokenUser(row)))+").\n\n"+setupPrompt+
 			"\n\nОтправьте новый токен, чтобы заменить текущий.")
 		return
 	}
@@ -71,7 +72,7 @@ func (b *Bot) handlePastedToken(chatID int64, m *tgbotapi.Message) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), b.requestTimeout())
 	defer cancel()
-	u, err := b.canvas.WithToken(token).User(ctx)
+	u, err := b.conn.Probe(ctx, token)
 
 	// The message carried a secret: erase it as soon as it has been read.
 	if derr := b.tg.DeleteMessage(chatID, m.MessageID); derr != nil {
@@ -80,47 +81,37 @@ func (b *Bot) handlePastedToken(chatID int64, m *tgbotapi.Message) {
 
 	switch {
 	case err == nil:
+		if perr := b.conn.Persist(chatID, token, u, true); perr != nil {
+			b.log.Error("save canvas token failed", "chat", chatID, "err", perr)
+			b.tg.SendHTML(chatID, "🔴 Не удалось сохранить токен: "+html.EscapeString(perr.Error()))
+			return
+		}
 		b.finishSetup(chatID, token, u)
-	case errors.Is(err, canvas.ErrUnauthorized):
+	case canvasconn.IsUnauthorized(err):
 		b.log.Warn("canvas token rejected", "chat", chatID)
 		b.tg.SendHTML(chatID, "🔴 <b>Canvas отклонил токен (401/403).</b>\n\n"+
 			"Проверьте, что:\n"+
 			"• токен скопирован целиком, без кавычек и пробелов;\n"+
-			"• он создан на "+html.EscapeString(b.canvas.BaseURL())+";\n"+
+			"• он создан на "+html.EscapeString(b.conn.BaseURL())+";\n"+
 			"• срок его действия не истёк.\n\n"+
 			"Отправьте токен ещё раз или /cancel.")
 	default:
-		b.log.Warn("canvas probe failed", "chat", chatID, "err", err)
-		b.tg.SendHTML(chatID, "🔴 <b>Не удалось связаться с Canvas.</b>\n\n"+
-			"<code>"+html.EscapeString(err.Error())+"</code>\n\n"+
-			"Отправьте токен ещё раз или /cancel.")
+		// Canvas itself is unreachable (timeout, DNS, 5xx). The token may still
+		// be good, so it is stored for background verification instead of
+		// asking the user to paste it again.
+		b.log.Warn("canvas probe failed, storing token for background verification",
+			"chat", chatID, "err", err)
+		b.finishSetupUnverified(chatID, token, err)
 	}
 }
 
-// finishSetup persists a verified token, applies it to the background sync
-// when needed and pulls live data into the chat.
+// finishSetup announces a verified token and pulls live data into the chat.
 func (b *Bot) finishSetup(chatID int64, token string, u model.User) {
-	sealed, err := b.box.Seal(token)
-	if err != nil {
-		b.log.Error("seal canvas token failed", "chat", chatID, "err", err)
-		b.tg.SendHTML(chatID, "🔴 Не удалось надёжно сохранить токен: "+html.EscapeString(err.Error()))
-		return
-	}
-	if err := b.store.SaveChatToken(chatID, sealed, u); err != nil {
-		b.log.Error("save canvas token failed", "chat", chatID, "err", err)
-		b.tg.SendHTML(chatID, "🔴 Не удалось сохранить токен в базе: "+html.EscapeString(err.Error()))
-		return
-	}
 	b.setPending(chatID, false)
-
-	// Without a token from .env the first chat token drives the background
-	// sync (the store holds one shared dataset).
-	if !b.canvas.HasToken() {
-		b.canvas.SetToken(token)
-	}
+	b.conn.AdoptTokenIfOwner(token)
 
 	storage := "обфусцирован в базе"
-	if b.box.Enabled() {
+	if b.conn.Encrypted() {
 		storage = "зашифрован в базе (AES-256-GCM)"
 	}
 	var sb strings.Builder
@@ -137,28 +128,44 @@ func (b *Bot) finishSetup(chatID int64, token string, u model.User) {
 	b.tg.SendHTML(chatID, sb.String())
 
 	// Ask Canvas for real data right away so the chat shows live content.
-	if !b.ensureSyncToken(chatID) {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
 	defer cancel()
-	if err := b.syncer.PollOnce(ctx); err != nil {
+	if err := b.conn.Refresh(ctx, chatID); err != nil {
 		b.reportSyncError(chatID, err)
 		return
 	}
 	b.sendView(chatID, "assign", 0, 0)
 }
 
+// finishSetupUnverified stores a token that could not be checked because
+// Canvas was unreachable. The background poll verifies it later.
+func (b *Bot) finishSetupUnverified(chatID int64, token string, cause error) {
+	if err := b.conn.Persist(chatID, token, model.User{}, false); err != nil {
+		b.log.Error("save canvas token failed", "chat", chatID, "err", err)
+		b.tg.SendHTML(chatID, "🔴 Не удалось сохранить токен в базе: "+html.EscapeString(err.Error()))
+		return
+	}
+	b.setPending(chatID, false)
+
+	var sb strings.Builder
+	sb.WriteString("⚠️ <b>Canvas не ответил на проверку.</b>\n\n")
+	sb.WriteString(probeFailureText(cause, b.requestTimeout()) + "\n\n")
+	sb.WriteString("Токен <b>сохранён</b> и будет проверяться автоматически. ")
+	sb.WriteString("Если окажется, что он недействителен, я сообщу — тогда пришлите новый.\n\n")
+	sb.WriteString("Повторить проверку сейчас: /refresh.")
+	b.tg.SendHTML(chatID, sb.String())
+}
+
 // commandRefresh triggers a live Canvas refresh from the chat.
 func (b *Bot) commandRefresh(chatID int64) {
-	if !b.ensureSyncToken(chatID) {
+	if !b.conn.EnsureSyncToken(chatID) {
 		b.promptSetup(chatID)
 		return
 	}
 	b.tg.SendHTML(chatID, "⏳ Опрашиваю Canvas…")
 	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
 	defer cancel()
-	if err := b.syncer.PollOnce(ctx); err != nil {
+	if err := b.conn.Refresh(ctx, chatID); err != nil {
 		b.reportSyncError(chatID, err)
 		return
 	}
@@ -171,10 +178,15 @@ func (b *Bot) sendCanvasStatus(chatID int64) {
 
 	var sb strings.Builder
 	sb.WriteString("🔑 <b>Canvas API</b>\n\n")
-	sb.WriteString("🌐 " + html.EscapeString(b.canvas.BaseURL()) + "\n")
-	sb.WriteString("🔑 Токен: " + b.canvasStateLine() + "\n")
-	if tok, _, ok := b.chatToken(chatID); ok {
-		sb.WriteString("🗝 Сохранённый токен: <code>" + html.EscapeString(maskToken(tok)) + "</code>\n")
+	sb.WriteString("🌐 " + html.EscapeString(b.conn.BaseURL()) + "\n")
+	sb.WriteString("🔑 Токен: " + b.conn.StateLine(chatID) + "\n")
+	if tok, row, ok := b.conn.ChatToken(chatID); ok {
+		sb.WriteString("🗝 Сохранённый токен: <code>" + html.EscapeString(maskToken(tok)) + "</code>")
+		if row.Verified {
+			sb.WriteString(" — подтверждён ✅\n")
+		} else {
+			sb.WriteString(" — ждёт проверки ⏳\n")
+		}
 	}
 	sb.WriteString("🔗 Связь: " + canvasStatusLine(snap.CanvasOK, snap.CanvasErr) + "\n")
 	lastPoll := "ещё не было"
@@ -185,6 +197,12 @@ func (b *Bot) sendCanvasStatus(chatID int64) {
 	sb.WriteString("📚 Активных курсов: " + strconv.Itoa(len(b.activeCourses())) + "\n")
 	sb.WriteString("📝 Отслеживается заданий: " + strconv.Itoa(len(b.activeAssignments())) + "\n")
 
+	text := strings.TrimRight(sb.String(), "\n")
+	if b.appURL != "" {
+		// Everything interactive lives in the Mini App now.
+		_ = b.tg.SendHTML(chatID, text+"\n\n📱 Открыть приложение — кнопка <b>Open</b> у поля ввода.")
+		return
+	}
 	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить сейчас", cbSyncRefresh("assign", 0, 0)),
@@ -193,36 +211,21 @@ func (b *Bot) sendCanvasStatus(chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("🔑 Вставить / заменить токен", cbToken),
 		),
 	}
-	_ = b.tg.SendInline(chatID, strings.TrimRight(sb.String(), "\n"), tgbotapi.NewInlineKeyboardMarkup(rows...))
+	_ = b.tg.SendInline(chatID, text, tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
 
 // disconnectCanvas drops the token stored for this chat.
 func (b *Bot) disconnectCanvas(chatID int64) {
-	if _, _, ok := b.chatToken(chatID); !ok {
+	if !b.conn.HasToken(chatID) {
 		b.tg.SendHTML(chatID, "Для этого чата токен не сохранён — отключать нечего.")
 		return
 	}
-	if err := b.store.DropChatToken(chatID); err != nil {
+	stopped, err := b.conn.Drop(chatID)
+	if err != nil {
 		b.tg.SendHTML(chatID, "🔴 Не удалось удалить токен: "+html.EscapeString(err.Error()))
 		return
 	}
 	b.setPending(chatID, false)
-
-	// Re-point the background sync at another chat token, or stop it.
-	stopped := false
-	if b.envToken == "" {
-		replaced := false
-		if latest, ok := b.store.LatestChatToken(); ok {
-			if plain, err := b.box.Open(latest.Token); err == nil {
-				b.canvas.SetToken(plain)
-				replaced = true
-			}
-		}
-		if !replaced {
-			b.canvas.SetToken("")
-			stopped = true
-		}
-	}
 
 	msg := "🗑 <b>Токен Canvas удалён</b> из базы и больше не используется."
 	if stopped {
@@ -235,87 +238,43 @@ func (b *Bot) disconnectCanvas(chatID int64) {
 // reportSyncError explains a failed live refresh in chat-friendly Russian.
 func (b *Bot) reportSyncError(chatID int64, err error) {
 	switch {
-	case errors.Is(err, canvas.ErrNoToken):
+	case canvasconn.IsNoToken(err):
 		b.promptSetup(chatID)
-	case errors.Is(err, canvas.ErrUnauthorized):
+	case canvasconn.IsUnauthorized(err):
 		b.tg.SendHTML(chatID, "🔴 <b>Canvas отклонил токен (401/403).</b>\n\n"+
 			"Обновите его: /setup")
 	default:
 		b.tg.SendHTML(chatID, "🔴 <b>Canvas не ответил.</b>\n\n"+
-			"<code>"+html.EscapeString(err.Error())+"</code>\n\n"+
-			"Попробуйте ещё раз: 🔄 Обновить")
+			probeFailureText(err, b.requestTimeout())+"\n\n"+
+			"Попробовать ещё раз: /refresh")
 	}
 }
 
-// --- Canvas token helpers ---
-
-// chatToken returns the plaintext Canvas token stored for a chat.
-func (b *Bot) chatToken(chatID int64) (string, model.User, bool) {
-	row, ok := b.store.ChatToken(chatID)
-	if !ok {
-		return "", model.User{}, false
+// probeFailureText explains why a Canvas request did not answer, with a hint.
+func probeFailureText(err error, timeout time.Duration) string {
+	hint := "Проверьте, что инстанс Canvas доступен из сети, где запущен бот."
+	if canvasconn.IsTimeout(err) {
+		hint = "Ответа не было за " + canvasconn.TimeoutText(timeout) + ". " +
+			"Проверьте, что инстанс Canvas доступен из сети, где запущен бот, и не блокирует его."
 	}
-	plain, err := b.box.Open(row.Token)
-	if err != nil {
-		b.log.Error("open stored canvas token failed", "chat", chatID, "err", err)
-		return "", model.User{}, false
-	}
-	return plain, model.User{Name: row.Name, Login: row.Login, Email: row.Email}, true
+	return "<code>" + html.EscapeString(err.Error()) + "</code>\n\n" + hint
 }
 
-// clientFor returns the Canvas client to use for an on-demand request from
-// this chat: the chat's own token when it has one, the shared client otherwise.
-func (b *Bot) clientFor(chatID int64) *canvas.Client {
-	if tok, _, ok := b.chatToken(chatID); ok {
-		return b.canvas.WithToken(tok)
-	}
-	return b.canvas
-}
+// --- small helpers ---
 
-// ensureSyncToken makes sure the background sync has a token, adopting the
-// chat's own token when nothing is configured yet. It reports whether Canvas
-// can be queried.
-func (b *Bot) ensureSyncToken(chatID int64) bool {
-	if b.canvas.HasToken() {
-		return true
-	}
-	if tok, _, ok := b.chatToken(chatID); ok {
-		b.canvas.SetToken(tok)
-		return true
-	}
-	return false
-}
-
-// canvasConfigured reports whether this chat can show Canvas data: either a
-// token came from the environment or the chat connected its own.
-func (b *Bot) canvasConfigured(chatID int64) bool {
-	return b.canvas.HasToken() || b.chatHasToken(chatID)
-}
-
-// chatHasToken reports whether a readable token is stored for the chat.
-func (b *Bot) chatHasToken(chatID int64) bool {
-	_, _, ok := b.chatToken(chatID)
-	return ok
-}
-
-// canvasStateLine renders the Canvas token source for menus and /status.
-func (b *Bot) canvasStateLine() string {
-	switch {
-	case b.envToken != "":
-		return "из .env (CANVAS_API_TOKEN)"
-	case b.canvas.HasToken():
-		return "подключён в чате (/setup)"
-	default:
-		return "не подключён — нажмите /setup"
-	}
+// chatTokenUser maps stored token metadata to a Canvas user for display.
+func chatTokenUser(row store.ChatToken) model.User {
+	return model.User{Name: row.Name, Login: row.Login, Email: row.Email}
 }
 
 // renderNoToken tells the user to connect Canvas and offers the button.
 func (b *Bot) renderNoToken() (string, tgbotapi.InlineKeyboardMarkup) {
 	text := "🔑 <b>Canvas API не подключён</b>\n\n" +
 		"Чтобы бот видел курсы, задания и оценки, нужен токен доступа Canvas.\n\n" +
-		"Нажмите кнопку ниже или отправьте /setup — я попрошу вставить токен, " +
-		"проверю его и сразу загружу данные."
+		"Отправьте /setup — я попрошу вставить токен, проверю его и сразу загружу данные."
+	if b.appURL != "" {
+		text += "\n\n📱 Или откройте приложение (кнопка <b>Open</b>) и подключите Canvas там."
+	}
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔑 Подключить Canvas API", cbToken),
