@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,6 +95,63 @@ func TestAssignmentsParsingAndTimezone(t *testing.T) {
 	}
 	if a.SubmittedAt == nil || !a.Submitted() {
 		t.Fatalf("submission not recorded")
+	}
+}
+
+// TestAssignmentsResolveOverrideDates covers assignments whose plain due_at is
+// null and whose deadline lives in all_dates (section/group overrides) — the
+// case that made Kazakh language tasks look like they had no deadline.
+func TestAssignmentsResolveOverrideDates(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte(`[
+			{"id":1,"name":"override only","due_at":null,"all_dates":[
+				{"due_at":"2026-10-25T18:59:59Z","base":false,"title":"Группа 2"},
+				{"due_at":null,"base":true,"title":"Everyone"}
+			]},
+			{"id":2,"name":"base only","due_at":null,"all_dates":[
+				{"due_at":"2026-11-01T18:59:59Z","base":true,"title":"Everyone"}
+			]},
+			{"id":3,"name":"no dates at all","due_at":null,"all_dates":[]},
+			{"id":4,"name":"own due_at wins","due_at":"2026-10-02T10:00:00Z","all_dates":[
+				{"due_at":"2026-10-09T10:00:00Z","base":false,"title":"Группа 2"}
+			]}
+		]`))
+	}))
+	defer srv.Close()
+
+	asgs, err := newTestClient(srv.URL).Assignments(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("Assignments: %v", err)
+	}
+	if len(asgs) != 4 {
+		t.Fatalf("want 4 assignments, got %d", len(asgs))
+	}
+	if !strings.Contains(query, "all_dates") {
+		t.Fatalf("all_dates must be requested, query = %q", query)
+	}
+	want := map[int64]string{
+		1: "2026-10-25T18:59:59Z", // the user's override, not the empty base
+		2: "2026-11-01T18:59:59Z", // base date when nothing else applies
+		4: "2026-10-02T10:00:00Z", // plain due_at stays authoritative
+	}
+	for _, a := range asgs {
+		w, ok := want[a.ID]
+		if !ok {
+			continue
+		}
+		if a.DueAt == nil {
+			t.Fatalf("assignment %d must have a resolved due date", a.ID)
+		}
+		if got := a.DueAt.UTC().Format(time.RFC3339); got != w {
+			t.Fatalf("assignment %d due = %s, want %s", a.ID, got, w)
+		}
+	}
+	for _, a := range asgs {
+		if a.ID == 3 && a.DueAt != nil {
+			t.Fatalf("an assignment without any dates must stay undated")
+		}
 	}
 }
 

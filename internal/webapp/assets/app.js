@@ -47,6 +47,13 @@
   const dtf = new Intl.DateTimeFormat("ru-RU", {
     day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
   });
+  const dtfYear = new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+
+  // fmtDue renders a deadline; dates outside the current year keep the year so
+  // "06.12" can never be mistaken for another year.
+  const fmtDue = (d) => (d.getFullYear() === new Date().getFullYear() ? dtf.format(d) : dtfYear.format(d));
 
   // relativeDeadline returns a short human label for a due date. Overdue rows
   // are labelled by the status chip instead, so the date itself carries no
@@ -60,11 +67,11 @@
     const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
     const days = Math.round((startOfDay(due) - startOfDay(now)) / dayMs);
     const time = due.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-    if (days < 0) return dtf.format(due);
+    if (days < 0) return fmtDue(due);
     if (days === 0) return `сегодня · ${time}`;
     if (days === 1) return `завтра · ${time}`;
     if (days <= 7) return `через ${days} дн · ${time}`;
-    return dtf.format(due);
+    return fmtDue(due);
   };
 
   const relClass = (status) => {
@@ -500,7 +507,7 @@
         <div class="field"><span class="field__label">Курсов</span><span class="field__value">${state.counts ? state.counts.courses : "—"}</span></div>
         <div class="field"><span class="field__label">Заданий</span><span class="field__value">${state.counts ? state.counts.assignments : "—"}</span></div>
         <div class="field"><span class="field__label">Последний опрос</span>
-          <span class="field__value">${sync.last_poll ? esc(dtf.format(new Date(sync.last_poll))) : "ещё не было"}</span></div>
+          <span class="field__value">${sync.last_poll ? esc(dtfYear.format(new Date(sync.last_poll))) : "ещё не было"}</span></div>
         <div class="field"><span class="field__label">Уведомлений отправлено</span><span class="field__value">${sync.notifications || 0}</span></div>
         <div class="actions">
           <button class="btn" data-action="refresh-now"${state.refreshing ? " disabled" : ""}>Обновить сейчас</button>
@@ -531,7 +538,7 @@
     lines.push(`<div class="kv"><dt>Оценка</dt><dd>${a.score !== null && a.score !== undefined
       ? `${fmtNum(a.score)} / ${fmtNum(a.points)}${a.grade ? " · " + esc(a.grade) : ""}`
       : '<span class="muted">не оценено</span>'}</dd></div>`);
-    lines.push(`<div class="kv"><dt>Дедлайн</dt><dd>${a.due_at ? `${esc(dtf.format(new Date(a.due_at)))}<br><span style="color:var(--hint)">${esc(relativeDeadline(a.due_at))}</span>` : "без дедлайна"}</dd></div>`);
+    lines.push(`<div class="kv"><dt>Дедлайн</dt><dd>${a.due_at ? `${esc(fmtDue(new Date(a.due_at)))}<br><span style="color:var(--hint)">${esc(relativeDeadline(a.due_at))}</span>` : "без дедлайна"}</dd></div>`);
     if (a.points !== null && a.points !== undefined) {
       lines.push(`<div class="kv"><dt>Максимум баллов</dt><dd>${fmtNum(a.points)}</dd></div>`);
     }

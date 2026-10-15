@@ -23,6 +23,14 @@ import (
 // deployed binary.
 //
 //	WEBAPP_VISUAL=1 WEBAPP_VISUAL_DB=./bot.db go test ./internal/webapp -run TestVisualApp -v -timeout 0
+//
+// WEBAPP_VISUAL_DB should point at the database the bot itself uses (or a copy of
+// it). Copy every file of the database — bot.db, bot.db-wal and bot.db-shm — the
+// bot runs SQLite in WAL mode and the main file alone can look empty.
+//
+// WEBAPP_VISUAL_SEED=1 fills an empty database with illustrative data (useful for
+// design work), and WEBAPP_VISUAL_SEED=empty keeps it empty while marking Canvas
+// as connected: both are demos, the default serves the data as it is stored.
 func TestVisualApp(t *testing.T) {
 	if os.Getenv("WEBAPP_VISUAL") != "1" {
 		t.Skip("set WEBAPP_VISUAL=1 to serve the app locally")

@@ -137,10 +137,15 @@ func (c *Client) Courses(ctx context.Context) ([]model.Course, error) {
 }
 
 // Assignments returns all assignments for a course with the embedded
-// submission, following pagination.
+// submission and every applicable due date (base + section/student overrides),
+// following pagination.
 func (c *Client) Assignments(ctx context.Context, courseID int64) ([]model.Assignment, error) {
 	q := url.Values{}
 	q.Set("include[]", "submission")
+	// all_dates carries the due dates that overrides (sections, groups,
+	// individual students) apply to this user; plain due_at is null when the
+	// teacher only set override dates.
+	q.Add("include[]", "all_dates")
 	q.Set("per_page", "100")
 	q.Set("order_by", "due_at")
 	var out []model.Assignment
@@ -322,6 +327,15 @@ type assignmentDTO struct {
 	SubmissionTypes []string       `json:"submission_types"`
 	HTMLURL         string         `json:"html_url"`
 	Submission      *submissionDTO `json:"submission"`
+	AllDates        []dateDTO      `json:"all_dates"`
+}
+
+// dateDTO is one entry of the all_dates array: the base date plus every
+// override that applies to the user (section, group or individual).
+type dateDTO struct {
+	DueAt *time.Time `json:"due_at"`
+	Base  bool       `json:"base"`
+	Title string     `json:"title"`
 }
 
 type submissionDTO struct {
@@ -338,7 +352,7 @@ func (d assignmentDTO) toModel() model.Assignment {
 		ID:       d.ID,
 		Name:     d.Name,
 		Points:   d.PointsPossible,
-		DueAt:    utc(d.DueAt),
+		DueAt:    utc(d.effectiveDueAt()),
 		HTMLURL:  d.HTMLURL,
 		Active:   true,
 	}
@@ -350,6 +364,36 @@ func (d assignmentDTO) toModel() model.Assignment {
 		a.WorkflowState = d.Submission.WorkflowState
 	}
 	return a
+}
+
+// effectiveDueAt returns the deadline that applies to the authenticated user.
+// Canvas puts the user's own date in due_at when one is set; when it is null
+// the assignment may still have override dates, which is what the Kazakh
+// language and formative tasks use. A non-base entry is the user's own
+// override; the earliest such date is the actionable one.
+func (d assignmentDTO) effectiveDueAt() *time.Time {
+	if d.DueAt != nil {
+		return d.DueAt
+	}
+	var base, override *time.Time
+	for _, ad := range d.AllDates {
+		if ad.DueAt == nil {
+			continue
+		}
+		if ad.Base {
+			if base == nil || ad.DueAt.Before(*base) {
+				base = ad.DueAt
+			}
+			continue
+		}
+		if override == nil || ad.DueAt.Before(*override) {
+			override = ad.DueAt
+		}
+	}
+	if override != nil {
+		return override
+	}
+	return base
 }
 
 // utc normalises a timestamp to UTC (or returns nil).
