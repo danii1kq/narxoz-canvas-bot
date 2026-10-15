@@ -1,0 +1,17 @@
+# Store every text file with LF in the repository and in checkouts.
+# This keeps a Windows working copy byte-identical to a Linux one, so files
+# copied to a server (scp) never break Makefile/Caddyfile/scripts, and Git no
+# longer warns about CRLF during commits.
+* text=auto eol=lf
+
+# Binary assets must never be transformed.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.db   binary

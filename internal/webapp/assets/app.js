@@ -679,14 +679,22 @@
     tg.ready();
     if (tg.expand) tg.expand();
     if (tg.disableVerticalSwipes) tg.disableVerticalSwipes();
+    // Native chrome: header and bottom bar keep the client's own colours
+    // ("bg_color" is a symbolic value the client resolves from its theme).
+    if (tg.setHeaderColor) {
+      try { tg.setHeaderColor("bg_color"); } catch (_) {}
+    }
+    if (tg.setBackgroundColor) {
+      try { tg.setBackgroundColor("bg_color"); } catch (_) {}
+    }
+    if (tg.setBottomBarColor) {
+      try { tg.setBottomBarColor("bg_color"); } catch (_) {}
+    }
     if (tg.onEvent) {
       tg.onEvent("themeChanged", applyTheme);
       tg.onEvent("viewportChanged", () => { /* layout is CSS-driven */ });
     }
     if (tg.BackButton) tg.BackButton.onClick(closeSheet);
-    if (tg.setHeaderColor && tg.colorScheme === "dark") {
-      try { tg.setHeaderColor("secondary_bg_color"); } catch (_) {}
-    }
   }
 
   applyTheme();
