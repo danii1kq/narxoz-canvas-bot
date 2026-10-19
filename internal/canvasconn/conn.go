@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"narxoz-canvas-bot/internal/canvas"
@@ -32,6 +33,11 @@ type Conn struct {
 	syncer   Syncer
 	envToken string
 	log      *slog.Logger
+
+	// activeChat is the chat whose token the shared client currently uses
+	// for the background sync (0 when the sync runs on the token from the
+	// environment or on no token at all).
+	activeChat atomic.Int64
 }
 
 // New constructs a Conn. envToken is CANVAS_API_TOKEN as read from the
@@ -138,17 +144,22 @@ func (c *Conn) Persist(chatID int64, token string, u model.User, verified bool) 
 	}
 	// Without a token from .env the first chat token drives the background
 	// sync (the store holds one shared dataset).
-	c.AdoptTokenIfOwner(token)
+	c.AdoptTokenIfOwner(chatID, token)
 	return nil
 }
 
+// ActiveChatID returns the chat whose token currently drives the background
+// sync, 0 when the sync uses the token from the environment or no token.
+func (c *Conn) ActiveChatID() int64 { return c.activeChat.Load() }
+
 // AdoptTokenIfOwner hands the shared client the chat token when nothing else
 // is configured for the background sync.
-func (c *Conn) AdoptTokenIfOwner(token string) {
+func (c *Conn) AdoptTokenIfOwner(chatID int64, token string) {
 	if c.FromEnv() || c.client.HasToken() {
 		return
 	}
 	c.client.SetToken(token)
+	c.activeChat.Store(chatID)
 }
 
 // Drop removes the chat's token and re-points the background sync at another
@@ -164,10 +175,12 @@ func (c *Conn) Drop(chatID int64) (stopped bool, err error) {
 	if latest, ok := c.store.LatestChatToken(); ok {
 		if plain, oerr := c.box.Open(latest.Token); oerr == nil {
 			c.client.SetToken(plain)
+			c.activeChat.Store(latest.ChatID)
 			return false, nil
 		}
 	}
 	c.client.SetToken("")
+	c.activeChat.Store(0)
 	return true, nil
 }
 
@@ -192,6 +205,7 @@ func (c *Conn) EnsureSyncToken(chatID int64) bool {
 	}
 	if tok, _, ok := c.ChatToken(chatID); ok {
 		c.client.SetToken(tok)
+		c.activeChat.Store(chatID)
 		return true
 	}
 	return false

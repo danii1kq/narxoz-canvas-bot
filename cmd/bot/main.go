@@ -59,7 +59,15 @@ func run() error {
 	fm := notify.NewFormatter(cfg.TZ)
 	stats := runtime.New()
 	box := secrets.NewBox(cfg.TokenSecret)
+	if !box.Enabled() {
+		log.Warn("CANVAS_TOKEN_SECRET is not set: Canvas tokens entered in the chat are stored base64-encoded (reversible), not encrypted")
+	}
 	cv := canvas.New(cfg.CanvasBaseURL, cfg.CanvasToken, 10, cfg.RequestTimeout, log, canvas.WithProxy(cfg.CanvasProxy))
+
+	p := poller.New(cfg, cv, st, tg, fm, stats, log)
+	conn := canvasconn.New(cv, st, box, p, cfg.CanvasToken, log)
+	// The poller marks exactly the chat token it used as verified.
+	p.SetTokenOwner(conn)
 
 	// CANVAS_API_TOKEN is optional: when it is empty, restore the token a user
 	// connected from the chat/app so the background sync keeps working across
@@ -72,18 +80,19 @@ func run() error {
 		if tok, ok := st.LatestChatToken(); ok {
 			plain, oerr := box.Open(tok.Token)
 			if oerr != nil {
-				log.Error("stored canvas token could not be opened", "chat_id", tok.ChatID, "err", oerr)
+				log.Error("stored canvas token could not be opened, send /setup to connect Canvas again",
+					"chat_id", tok.ChatID, "err", oerr)
 				break
 			}
-			cv.SetToken(plain)
+			// The chat that owns the restored token is remembered, so a
+			// successful poll marks that token as verified.
+			conn.AdoptTokenIfOwner(tok.ChatID, plain)
 			tokenSource = "chat"
 			log.Info("canvas token restored from chat setup",
 				"chat_id", tok.ChatID, "saved_at", tok.SavedAt.Format(time.RFC3339))
 		}
 	}
 
-	p := poller.New(cfg, cv, st, tg, fm, stats, log)
-	conn := canvasconn.New(cv, st, box, p, cfg.CanvasToken, log)
 	if !cv.HasToken() {
 		log.Warn("canvas is not connected yet; connect it with /setup in the chat or in the Mini App")
 	}

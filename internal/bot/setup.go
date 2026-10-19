@@ -108,7 +108,7 @@ func (b *Bot) handlePastedToken(chatID int64, m *tgbotapi.Message) {
 // finishSetup announces a verified token and pulls live data into the chat.
 func (b *Bot) finishSetup(chatID int64, token string, u model.User) {
 	b.setPending(chatID, false)
-	b.conn.AdoptTokenIfOwner(token)
+	b.conn.AdoptTokenIfOwner(chatID, token)
 
 	storage := "обфусцирован в базе"
 	if b.conn.Encrypted() {

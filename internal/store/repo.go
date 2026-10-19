@@ -80,28 +80,8 @@ func (s *Store) SyncCourses(courses []model.Course) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("UPDATE courses SET active=0"); err != nil {
+	if err := upsertCourses(tx, courses); err != nil {
 		return err
-	}
-	stmt, err := tx.Prepare(`INSERT INTO courses (id, name, code, active, muted, updated_at)
-VALUES (?,?,?,?,?,?)
-ON CONFLICT(id) DO UPDATE SET name=excluded.name, code=excluded.code,
-    active=excluded.active, updated_at=excluded.updated_at`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	now := nowUTC().Format(time.RFC3339)
-	for _, c := range courses {
-		// Provided courses are by definition active (enrollment_state=active).
-		active := 1
-		muted := 0
-		if c.Muted {
-			muted = 1
-		}
-		if _, err := stmt.Exec(c.ID, c.Name, c.Code, active, muted, now); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

@@ -73,28 +73,20 @@ func (s *Store) UpsertAssignments(rows []model.Assignment) error {
 // them, so spurious "new assignment" notifications cannot be triggered by an
 // API glitch. Notification flags of existing rows are preserved by
 // INSERT OR REPLACE because the poller passes back the mutated rows.
+//
+// The poller uses SyncAll instead, which only deactivates the courses it could
+// really fetch, so a single failing course cannot empty the dataset.
 func (s *Store) SyncAssignments(rows []model.Assignment) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("UPDATE assignments SET active=0"); err != nil {
+	if err := deactivateAllAssignments(tx); err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(assignmentUpsert)
-	if err != nil {
+	if err := upsertAssignments(tx, rows); err != nil {
 		return err
-	}
-	defer stmt.Close()
-	for _, a := range rows {
-		a.Active = true
-		if a.LastSeen.IsZero() {
-			a.LastSeen = nowUTC()
-		}
-		if err := execAssignment(stmt, a); err != nil {
-			return err
-		}
 	}
 	return tx.Commit()
 }

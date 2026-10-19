@@ -29,6 +29,28 @@ type Poller struct {
 	mu        sync.Mutex // serialises the load->diff->save critical sections
 	seeded    bool
 	alertSent bool // "no token / bad token" notice already sent
+	owner     TokenOwner
+}
+
+// TokenOwner reports which chat owns the token that currently drives the
+// background sync (0 when the sync runs on the token from the environment).
+type TokenOwner interface {
+	ActiveChatID() int64
+}
+
+// SetTokenOwner wires the connection state into the poller, so a successful
+// poll can mark exactly the chat token that was used as verified.
+func (p *Poller) SetTokenOwner(owner TokenOwner) {
+	p.owner = owner
+}
+
+// activeChatID returns the chat id that owns the token in use, 0 when it
+// cannot be determined.
+func (p *Poller) activeChatID() int64 {
+	if p.owner == nil {
+		return 0
+	}
+	return p.owner.ActiveChatID()
 }
 
 // New constructs a Poller.
@@ -57,6 +79,11 @@ func (p *Poller) Run(ctx context.Context) {
 
 func (p *Poller) loop(ctx context.Context, interval time.Duration, job func(context.Context) error, wg *sync.WaitGroup) {
 	defer wg.Done()
+	// time.NewTicker panics on a non-positive interval. The configuration
+	// rejects such values, this is the last line of defence.
+	if interval <= 0 {
+		interval = time.Minute
+	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -114,10 +141,18 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	}
 
 	var current []model.Assignment
+	// synced lists the courses whose assignments were really fetched. Only
+	// those courses are deactivated in the store, so a single failing course
+	// cannot make its tasks (and their deadlines) disappear.
+	synced := make([]int64, 0, len(courses))
+	var lastErr error
+	failed := 0
 	for _, c := range courses {
 		asgs, aerr := p.canvas.Assignments(ctx, c.ID)
 		if aerr != nil {
 			p.log.Error("fetch assignments failed", "course", c.ID, "err", aerr)
+			lastErr = aerr
+			failed++
 			if errors.Is(aerr, canvas.ErrNoToken) {
 				p.sendCanvasAlert(formatCanvasAlert("no token"))
 			} else if errors.Is(aerr, canvas.ErrUnauthorized) {
@@ -125,6 +160,7 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 			}
 			continue
 		}
+		synced = append(synced, c.ID)
 		for i := range asgs {
 			asgs[i].CourseID = c.ID
 		}
@@ -132,20 +168,40 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	}
 
 	now := time.Now().UTC()
-	p.stats.SetCanvasOK(true, "", now)
-	p.mu.Lock()
-	p.alertSent = false
-	p.mu.Unlock()
+	if failed > 0 {
+		// Canvas answered for some courses only. The stored state is kept as
+		// it is, but the connection is reported as broken so the user sees it.
+		p.stats.SetCanvasOK(false, lastErr.Error(), now)
+	} else {
+		p.stats.SetCanvasOK(true, "", now)
+		// The "token missing/expired" notice is one-off: it is armed again
+		// only after a completely successful poll.
+		p.mu.Lock()
+		p.alertSent = false
+		p.mu.Unlock()
+	}
+
+	if len(synced) == 0 {
+		// Nothing could be fetched, so nothing is written: the stored
+		// assignments stay active and no "new assignment" event is produced.
+		if lastErr != nil {
+			return p.handleCanvasError(lastErr)
+		}
+		return nil
+	}
 	if p.cfg.CanvasToken == "" {
 		// The most recently connected chat token drives this sync, so a
 		// successful poll proves it works (it may have been stored while
-		// Canvas was unreachable).
-		if err := p.store.SetLatestChatTokenVerified(true); err != nil {
-			p.log.Warn("could not mark chat token verified", "err", err)
+		// Canvas was unreachable). The chat that actually owns the token in
+		// use is marked verified, not simply the last one that was saved.
+		if owner := p.activeChatID(); owner != 0 {
+			if err := p.store.SetChatTokenVerified(owner, true); err != nil {
+				p.log.Warn("could not mark chat token verified", "err", err)
+			}
 		}
 	}
 
-	events, next, muted, isSeed, perr := p.computeAndPersist(current, courses, now)
+	events, next, muted, isSeed, perr := p.computeAndPersist(current, courses, synced, now)
 	if perr != nil {
 		return perr
 	}
@@ -162,7 +218,7 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 }
 
 // computeAndPersist runs the diff and persists inside the write lock.
-func (p *Poller) computeAndPersist(current []model.Assignment, courses []model.Course, now time.Time) ([]model.Event, []model.Assignment, map[int64]bool, bool, error) {
+func (p *Poller) computeAndPersist(current []model.Assignment, courses []model.Course, synced []int64, now time.Time) ([]model.Event, []model.Assignment, map[int64]bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -173,15 +229,16 @@ func (p *Poller) computeAndPersist(current []model.Assignment, courses []model.C
 	isSeed := !p.seeded
 	events, next := DetectRealtime(prev, current, now)
 
-	if err := p.store.SyncAssignments(next); err != nil {
-		return nil, nil, nil, false, err
-	}
-	if err := p.store.SyncCourses(courses); err != nil {
+	// One transaction for courses and assignments: a crash can no longer
+	// leave the two halves out of sync.
+	if err := p.store.SyncAll(courses, next, synced); err != nil {
 		return nil, nil, nil, false, err
 	}
 	if isSeed {
 		p.seeded = true
-		_ = p.store.SetSeeded()
+		if err := p.store.SetSeeded(); err != nil {
+			p.log.Warn("could not store the seed marker", "err", err)
+		}
 	}
 	muted := p.store.LoadCourseMutes()
 	return events, next, muted, isSeed, nil

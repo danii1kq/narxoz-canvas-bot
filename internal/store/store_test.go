@@ -113,6 +113,59 @@ func TestSyncAssignments_ActiveAndFlagsPreserved(t *testing.T) {
 	}
 }
 
+// TestSyncAll_KeepsAssignmentsOfCoursesThatFailed makes sure a transient
+// Canvas error on one course cannot deactivate (and thereby hide) the
+// assignments of that course.
+func TestSyncAll_KeepsAssignmentsOfCoursesThatFailed(t *testing.T) {
+	st := openTemp(t)
+	courses := []model.Course{{ID: 1, Name: "Math"}, {ID: 2, Name: "Phys"}}
+	first := []model.Assignment{
+		{CourseID: 1, ID: 11, Name: "A"},
+		{CourseID: 2, ID: 22, Name: "B"},
+	}
+	if err := st.SyncAll(courses, first, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second round: course 2 could not be fetched, so only course 1 is in
+	// the synced set. The assignment of course 2 must stay active.
+	if err := st.SyncAll(courses, []model.Assignment{{CourseID: 1, ID: 11, Name: "A"}}, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	byID := loadByID(t, st)
+	if !byID[22].Active {
+		t.Fatal("assignment of the course that failed must stay active")
+	}
+	if !byID[11].Active {
+		t.Fatal("assignment 11 must be active")
+	}
+
+	// A course that really disappeared from Canvas is deactivated.
+	if err := st.SyncAll(courses[:1], []model.Assignment{{CourseID: 1, ID: 11, Name: "A"}}, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	byID = loadByID(t, st)
+	if byID[22].Active {
+		t.Fatal("assignment of a course that disappeared must be inactive")
+	}
+}
+
+// TestSyncAll_WithoutFetchedCoursesKeepsEverything makes sure a completely
+// failed poll does not empty the dataset.
+func TestSyncAll_WithoutFetchedCoursesKeepsEverything(t *testing.T) {
+	st := openTemp(t)
+	courses := []model.Course{{ID: 1, Name: "Math"}}
+	if err := st.SyncAll(courses, []model.Assignment{{CourseID: 1, ID: 11, Name: "A"}}, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SyncAll(courses, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !loadByID(t, st)[11].Active {
+		t.Fatal("assignment must stay active when nothing could be fetched")
+	}
+}
+
 func TestUpsertAssignments_NullableRoundTrip(t *testing.T) {
 	st := openTemp(t)
 	// Row with null points/score/due.

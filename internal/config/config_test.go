@@ -95,6 +95,32 @@ func TestLoadInvalidChatID(t *testing.T) {
 	}
 }
 
+// A non-positive interval would panic inside time.NewTicker, so it has to be
+// rejected during the configuration check.
+func TestLoadRejectsNonPositiveIntervals(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "tg-token")
+	t.Setenv("CANVAS_API_TOKEN", "cv-token")
+	clearOptional(t)
+
+	for _, v := range []string{"0", "-5", "0s"} {
+		t.Setenv("REMINDER_INTERVAL", v)
+		if _, err := config.Load(); err == nil {
+			t.Fatalf("expected error for REMINDER_INTERVAL=%q", v)
+		}
+	}
+	t.Setenv("REMINDER_INTERVAL", "30m")
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("Load with a valid REMINDER_INTERVAL: %v", err)
+	}
+
+	for _, v := range []string{"0", "-1", "5s"} {
+		t.Setenv("POLL_INTERVAL", v)
+		if _, err := config.Load(); err == nil {
+			t.Fatalf("expected error for POLL_INTERVAL=%q", v)
+		}
+	}
+}
+
 func TestLoadBareIntervalAsMinutes(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "tg-token")
 	t.Setenv("CANVAS_API_TOKEN", "cv-token")

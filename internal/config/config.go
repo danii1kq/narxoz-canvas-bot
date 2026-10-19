@@ -114,6 +114,11 @@ func Load() (Config, error) {
 	if c.PollInterval < 10*time.Second {
 		return c, fmt.Errorf("POLL_INTERVAL must be at least 10s")
 	}
+	// A non-positive interval would panic inside time.NewTicker and take the
+	// whole process down, so it is rejected here with a clear message.
+	if c.ReminderInterval < time.Minute {
+		return c, fmt.Errorf("REMINDER_INTERVAL must be at least 1m")
+	}
 	if c.ReminderLead != 6 && c.ReminderLead != 12 && c.ReminderLead != 24 {
 		return c, fmt.Errorf("REMINDER_LEAD must be one of 6, 12, 24")
 	}
