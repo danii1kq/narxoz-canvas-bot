@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"html"
 	"strconv"
 	"strings"
@@ -39,6 +40,26 @@ func (f Formatter) dueText(t *time.Time) string {
 		return "без дедлайна"
 	}
 	return f.DateTime(t)
+}
+
+// zoneLabel renders the offset of the configured location, e.g. "UTC+5". The
+// timezone is configurable, so the offset must not be hardcoded.
+func (f Formatter) zoneLabel() string {
+	_, offset := time.Now().In(f.Loc).Zone()
+	if offset == 0 {
+		return "UTC"
+	}
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	hours := offset / 3600
+	minutes := (offset % 3600) / 60
+	if minutes == 0 {
+		return "UTC" + sign + strconv.Itoa(hours)
+	}
+	return "UTC" + sign + strconv.Itoa(hours) + ":" + fmt.Sprintf("%02d", minutes)
 }
 
 func fmtFloat(f *float64) string {
@@ -94,7 +115,7 @@ func (f Formatter) FormatEvent(e model.Event) string {
 		writeCourse(&b, e.Course)
 		b.WriteString("📝 " + esc(a.Name) + "\n")
 		b.WriteString("🎯 Баллы: " + fmtFloat(a.Points) + "\n")
-		b.WriteString("⏰ Дедлайн: " + f.dueText(a.DueAt) + " (UTC+5)\n")
+		b.WriteString("⏰ Дедлайн: " + f.dueText(a.DueAt) + " (" + f.zoneLabel() + ")\n")
 		if u := link(a.HTMLURL); u != "" {
 			b.WriteString("\n" + u + "\n")
 		}

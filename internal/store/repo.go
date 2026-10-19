@@ -96,17 +96,16 @@ func (s *Store) SetCourseMuted(id int64, muted bool) error {
 	return err
 }
 
-// ToggleCourseMute flips the mute flag for a course and returns the new state.
+// ToggleCourseMute flips the mute flag for a course and returns the new
+// state. The flip is a single statement, so two concurrent toggles (the bot
+// and the Mini App) cannot lose one of them.
 func (s *Store) ToggleCourseMute(id int64) (bool, error) {
 	var muted int
-	if err := s.db.QueryRow("SELECT muted FROM courses WHERE id=?", id).Scan(&muted); err != nil {
+	err := s.db.QueryRow("UPDATE courses SET muted = 1-muted WHERE id=? RETURNING muted", id).Scan(&muted)
+	if err != nil {
 		return false, err
 	}
-	next := muted == 0
-	if err := s.SetCourseMuted(id, next); err != nil {
-		return false, err
-	}
-	return next, nil
+	return muted != 0, nil
 }
 
 // --- Settings ---

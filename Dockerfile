@@ -18,13 +18,19 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/bot ./c
 
 # ---- runtime stage ----
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata su-exec
+
+# The bot runs as an unprivileged user (uid 10001). The entrypoint prepares
+# the data volume and then drops the privileges.
+RUN addgroup -g 10001 -S bot && adduser -u 10001 -S -G bot bot
 WORKDIR /app
 
 # Database lives on a mounted volume so it survives restarts.
 VOLUME ["/data"]
 
 COPY --from=build /out/bot /app/bot
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Defaults; can be overridden via environment / .env.
 ENV DB_PATH=/data/bot.db \
@@ -38,4 +44,8 @@ ENV DB_PATH=/data/bot.db \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- "http://127.0.0.1:$${WEBAPP_ADDR##*:}/healthz" || exit 1
 
-ENTRYPOINT ["/app/bot"]
+# The Mini App listens here (Caddy proxies to it).
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/app/bot"]

@@ -16,6 +16,9 @@ services:
       WEBAPP_URL: ${WEBAPP_URL:-}
     volumes:
       - bot-data:/data
+    # A Canvas sync can take longer than the default 10 seconds. The bot
+    # finishes the running request before it exits, so give it time.
+    stop_grace_period: 2m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- \"http://127.0.0.1:$${WEBAPP_ADDR##*:}/healthz\" || exit 1"]
       interval: 30s
@@ -37,7 +40,8 @@ services:
     container_name: narxoz-canvas-caddy
     restart: unless-stopped
     depends_on:
-      - bot
+      bot:
+        condition: service_healthy
     environment:
       # Never empty: an empty site address makes the Caddyfile invalid and the
       # container would crash-loop.

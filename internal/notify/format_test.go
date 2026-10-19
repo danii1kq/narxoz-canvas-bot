@@ -20,6 +20,29 @@ func TestDateTimeInAlmaty(t *testing.T) {
 	}
 }
 
+// The offset in the text must follow the configured timezone instead of a
+// hardcoded "UTC+5".
+func TestFormatEventShowsTheConfiguredOffset(t *testing.T) {
+	due := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+	ev := model.Event{
+		Kind:   model.EventNewAssignment,
+		Course: "Math",
+		A:      model.Assignment{Name: "Homework", DueAt: &due},
+	}
+	almaty := notify.NewFormatter(time.FixedZone("Asia/Almaty", 5*3600))
+	if got := almaty.FormatEvent(ev); !strings.Contains(got, "UTC+5") {
+		t.Fatalf("the event must mention UTC+5: %q", got)
+	}
+	moscow := notify.NewFormatter(time.FixedZone("Europe/Moscow", 3*3600))
+	if got := moscow.FormatEvent(ev); !strings.Contains(got, "UTC+3") {
+		t.Fatalf("the event must mention UTC+3: %q", got)
+	}
+	utc := notify.NewFormatter(time.UTC)
+	if got := utc.FormatEvent(ev); !strings.Contains(got, "(UTC)") {
+		t.Fatalf("the event must mention UTC: %q", got)
+	}
+}
+
 func TestFormatEventNewAssignmentNoDeadlineEscapesHTML(t *testing.T) {
 	f := notify.NewFormatter(time.UTC)
 	pts := 10.0

@@ -5,7 +5,14 @@
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
 bot.db*
+data/
+*.log
+*.pem
+*.key
 
 # Build artefacts and VCS metadata.
 bin/
@@ -13,6 +20,7 @@ bin/
 .gitignore
 Makefile
 README.md
+README.ru.md
 prompt.md
 
 # Editor / OS noise.
