@@ -27,6 +27,7 @@ type Poller struct {
 	cfg    config.Config
 
 	mu        sync.Mutex // serialises the load->diff->save critical sections
+	pollMu    sync.Mutex // serialises the polls themselves
 	seeded    bool
 	alertSent bool // "no token / bad token" notice already sent
 	owner     TokenOwner
@@ -134,7 +135,23 @@ func (p *Poller) targets() []int64 {
 // persists the new state and dispatches realtime notifications. On the very
 // first successful poll (seeding), state is stored but nothing is sent, to
 // avoid a flood of "new assignment" notifications for pre-existing work.
+//
+// Only one poll runs at a time: the dataset is shared, so two parallel walks
+// would double the load on the Canvas API (which is exactly what gets a
+// server blocked).
 func (p *Poller) PollOnce(ctx context.Context) error {
+	p.pollMu.Lock()
+	defer p.pollMu.Unlock()
+	// The lock may have been held by the scheduled poll for a long time; a
+	// caller with a deadline must not start a walk that cannot finish.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.poll(ctx)
+}
+
+// poll does the actual work of PollOnce, without the lock.
+func (p *Poller) poll(ctx context.Context) error {
 	courses, err := p.canvas.Courses(ctx)
 	if err != nil {
 		return p.handleCanvasError(err)

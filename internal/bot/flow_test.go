@@ -127,6 +127,7 @@ func TestSetupFlowConnectsCanvasFromChat(t *testing.T) {
 
 	// 3) A valid token is verified, stored sealed and applied to the client.
 	b.handle(msgUpdate(chatID, 13, goodToken))
+	b.waitForSync()
 	sent := strings.Join(ft.sentTexts(), "\n---\n")
 	for _, want := range []string{"Canvas API подключён", "Иван Студент", "ivan", "Домашка 1", "Математика"} {
 		if !strings.Contains(sent, want) {
@@ -173,6 +174,7 @@ func TestSetupFlowConnectsCanvasFromChat(t *testing.T) {
 	// 5) The "🔄 Обновить" button asks Canvas again and re-renders the list.
 	before := len(ft.sentTexts())
 	b.handle(msgUpdate(chatID, 14, btnRefresh))
+	b.waitForSync()
 	if len(ft.sentTexts()) <= before {
 		t.Fatal("refresh must send an updated view")
 	}
@@ -376,6 +378,77 @@ func TestGroupChatIsNeverSubscribedAndKeepsItsMessages(t *testing.T) {
 	if _, ok := st.ChatToken(chatID); ok {
 		t.Fatal("a group message must never be stored as a Canvas token")
 	}
+}
+
+// TestRefreshDoesNotBlockTheBot makes sure a running Canvas refresh does not
+// freeze the update loop: other messages must be answered right away.
+func TestRefreshDoesNotBlockTheBot(t *testing.T) {
+	const chatID = int64(8001)
+
+	// The fake Canvas holds the course list until the test releases it, so
+	// the refresh is guaranteed to be still running.
+	release := make(chan struct{})
+	canvasSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/courses":
+			<-release
+			writeJSON(w, []map[string]any{})
+		case "/api/v1/users/self":
+			writeJSON(w, map[string]any{"id": 7, "name": "Иван Студент", "login": "ivan"})
+		default:
+			writeJSON(w, []map[string]any{})
+		}
+	}))
+	defer canvasSrv.Close()
+
+	ft := &fakeTelegram{}
+	tgSrv := httptest.NewServer(http.HandlerFunc(ft.serveHTTP))
+	defer tgSrv.Close()
+
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	tg, err := notify.NewTelegram("test-token", tgSrv.URL+"/bot%s/%s", log)
+	if err != nil {
+		t.Fatalf("fake telegram: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	box := secrets.NewBox("test-secret")
+	cv := canvas.New(canvasSrv.URL, "test-token", 1000, 10*time.Second, log)
+	cfg := config.Config{
+		PollInterval:     time.Minute,
+		ReminderInterval: time.Minute,
+		ReminderLead:     24,
+		TZ:               time.UTC,
+		RequestTimeout:   10 * time.Second,
+	}
+	fm := notify.NewFormatter(time.UTC)
+	stats := runtime.New()
+	p := poller.New(cfg, cv, st, tg, fm, stats, log)
+	conn := canvasconn.New(cv, st, box, p, "", log)
+	b := New(tg, st, conn, fm, stats, log, time.UTC, 0, "", 10*time.Second)
+
+	// 1) /refresh starts the walk and returns immediately.
+	b.handle(msgUpdate(chatID, 1, "/refresh"))
+	if !ft.anyContains("Опрашиваю Canvas") {
+		t.Fatalf("the refresh must be acknowledged: %v", ft.sentTexts())
+	}
+
+	// 2) Another command is answered while the walk is still running.
+	b.handle(msgUpdate(chatID, 2, "/status"))
+	if !ft.anyContains("Статус") {
+		t.Fatalf("the bot must answer /status during the refresh: %v", ft.sentTexts())
+	}
+	if ft.anyContains("Данные обновлены") {
+		t.Fatalf("the refresh must not have finished yet: %v", ft.sentTexts())
+	}
+
+	// 3) Releasing Canvas ends the refresh.
+	close(release)
+	b.waitForSync()
 }
 
 // --- fakes ---

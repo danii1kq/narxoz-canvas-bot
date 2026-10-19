@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sort"
 	"strings"
@@ -37,6 +38,11 @@ type Bot struct {
 	pendMu sync.Mutex
 	// pending tracks chats that are expected to paste a Canvas token next.
 	pending map[int64]bool
+
+	// syncMu guards the syncing flag, syncWG tracks the background syncs.
+	syncMu  sync.Mutex
+	syncing bool
+	syncWG  sync.WaitGroup
 }
 
 // New constructs a Bot.
@@ -151,6 +157,49 @@ func (b *Bot) editInline(chatID int64, msgID int, text string, kb tgbotapi.Inlin
 	if err := b.tg.EditInline(chatID, msgID, text, kb); err != nil {
 		b.log.Error("edit message failed", "chat", chatID, "message", msgID, "err", err)
 	}
+}
+
+// errSyncInProgress is reported when a sync is already running.
+var errSyncInProgress = errors.New("синхронизация уже выполняется")
+
+// runSync performs a Canvas refresh in the background and calls done with the
+// result.
+//
+// The refresh must not block the update loop: a full walk over every course
+// (with all pagination pages) can take minutes, and blocking the loop would
+// freeze the bot for every chat. Only one refresh runs at a time, the
+// poller serialises the walks on its side.
+func (b *Bot) runSync(chatID int64, done func(error)) {
+	b.syncMu.Lock()
+	if b.syncing {
+		b.syncMu.Unlock()
+		done(errSyncInProgress)
+		return
+	}
+	b.syncing = true
+	b.syncWG.Add(1)
+	b.syncMu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				b.log.Error("recovered from panic during a canvas sync", "chat", chatID, "recover", r)
+			}
+			b.syncMu.Lock()
+			b.syncing = false
+			b.syncMu.Unlock()
+			b.syncWG.Done()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
+		defer cancel()
+		done(b.conn.Refresh(ctx, chatID))
+	}()
+}
+
+// waitForSync waits for the background syncs to finish. Only the tests use
+// it; the bot itself never blocks on a sync.
+func (b *Bot) waitForSync() {
+	b.syncWG.Wait()
 }
 
 func (b *Bot) onMessage(m *tgbotapi.Message) {

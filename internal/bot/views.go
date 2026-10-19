@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"html"
 	"strconv"
 	"strings"
@@ -341,21 +342,26 @@ func (b *Bot) doPing(chatID int64, msgID int, cbID string) {
 }
 
 // doSync asks Canvas for fresh data and re-renders the current view in place.
+// The refresh runs in the background: it can take minutes and must not block
+// the update loop.
 func (b *Bot) doSync(chatID int64, msgID int, cbID, view string, param int64, page int) {
 	if !b.conn.EnsureSyncToken(chatID) {
 		b.tg.AnswerCallback(cbID, "🔑 Сначала подключите Canvas API", true)
 		return
 	}
 	b.tg.AnswerCallback(cbID, "⏳ Опрашиваю Canvas…", false)
-	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
-	defer cancel()
-	if err := b.conn.Refresh(ctx, chatID); err != nil {
-		b.tg.AnswerCallback(cbID, "🔴 "+shortErr(err), true)
-		return
-	}
-	text, kb := b.renderView(chatID, view, param, page)
-	b.editInline(chatID, msgID, text, kb)
-	b.tg.AnswerCallback(cbID, "✅ Данные обновлены", false)
+	b.runSync(chatID, func(err error) {
+		switch {
+		case err == nil:
+			text, kb := b.renderView(chatID, view, param, page)
+			b.editInline(chatID, msgID, text, kb)
+		case errors.Is(err, errSyncInProgress):
+			b.tg.AnswerCallback(cbID, "⏳ Обновление уже выполняется", true)
+		default:
+			b.log.Error("canvas refresh failed", "chat", chatID, "err", err)
+			b.tg.AnswerCallback(cbID, "🔴 "+shortErr(err), true)
+		}
+	})
 }
 
 func (b *Bot) sendSettings(chatID int64) {

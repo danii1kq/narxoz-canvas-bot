@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"html"
 	"strconv"
 	"strings"
@@ -136,13 +137,17 @@ func (b *Bot) finishSetup(chatID int64, token string, u model.User) {
 	b.tg.SendHTML(chatID, sb.String())
 
 	// Ask Canvas for real data right away so the chat shows live content.
-	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
-	defer cancel()
-	if err := b.conn.Refresh(ctx, chatID); err != nil {
-		b.reportSyncError(chatID, err)
-		return
-	}
-	b.sendView(chatID, "assign", 0, 0)
+	// The sync runs in the background: the bot must not freeze while Canvas
+	// is being walked.
+	b.runSync(chatID, func(err error) {
+		if err != nil {
+			if !errors.Is(err, errSyncInProgress) {
+				b.reportSyncError(chatID, err)
+			}
+			return
+		}
+		b.sendView(chatID, "assign", 0, 0)
+	})
 }
 
 // finishSetupUnverified stores a token that could not be checked because
@@ -164,20 +169,24 @@ func (b *Bot) finishSetupUnverified(chatID int64, token string, cause error) {
 	b.tg.SendHTML(chatID, sb.String())
 }
 
-// commandRefresh triggers a live Canvas refresh from the chat.
+// commandRefresh triggers a live Canvas refresh from the chat. The refresh
+// runs in the background, so the bot keeps answering other messages.
 func (b *Bot) commandRefresh(chatID int64) {
 	if !b.conn.EnsureSyncToken(chatID) {
 		b.promptSetup(chatID)
 		return
 	}
 	b.tg.SendHTML(chatID, "⏳ Опрашиваю Canvas…")
-	ctx, cancel := context.WithTimeout(context.Background(), b.syncTimeout())
-	defer cancel()
-	if err := b.conn.Refresh(ctx, chatID); err != nil {
-		b.reportSyncError(chatID, err)
-		return
-	}
-	b.sendView(chatID, "assign", 0, 0)
+	b.runSync(chatID, func(err error) {
+		switch {
+		case err == nil:
+			b.sendView(chatID, "assign", 0, 0)
+		case errors.Is(err, errSyncInProgress):
+			b.sendHTML(chatID, "⏳ Обновление уже выполняется, результат придёт в чат.")
+		default:
+			b.reportSyncError(chatID, err)
+		}
+	})
 }
 
 // sendCanvasStatus reports the Canvas connection state for this chat.
