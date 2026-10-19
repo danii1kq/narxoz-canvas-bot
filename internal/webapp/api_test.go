@@ -314,6 +314,78 @@ func TestCanvasTokenFlow(t *testing.T) {
 	}
 }
 
+// TestAPIMethodsAreChecked makes sure the endpoints that change something do
+// not answer a GET: a link preview or a crawler would otherwise trigger a
+// full Canvas sync.
+func TestAPIMethodsAreChecked(t *testing.T) {
+	f := newFixture(t)
+	seedData(t, f.store)
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/refresh"},
+		{http.MethodGet, "/api/settings/lead"},
+		{http.MethodGet, "/api/courses/1/mute"},
+		{http.MethodGet, "/api/canvas/check"},
+		{http.MethodPost, "/api/state"},
+		{http.MethodPost, "/api/assignments"},
+		{http.MethodPost, "/api/courses"},
+	}
+	for _, tc := range cases {
+		resp, _ := f.do(t, tc.method, tc.path, nil)
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s: status = %d, want 405", tc.method, tc.path, resp.StatusCode)
+		}
+		if allow := resp.Header.Get("Allow"); allow == "" {
+			t.Fatalf("%s %s: the Allow header must be set", tc.method, tc.path)
+		}
+	}
+	// The refresh really did not run.
+	if f.syncer.calls != 0 {
+		t.Fatalf("syncer calls = %d, want 0", f.syncer.calls)
+	}
+}
+
+// TestSecurityHeaders makes sure the app ships the headers that protect it.
+func TestSecurityHeaders(t *testing.T) {
+	f := newFixture(t)
+	resp, _ := f.do(t, http.MethodGet, "/api/state", nil)
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "default-src 'self'") {
+		t.Fatalf("CSP must restrict the default source: %q", csp)
+	}
+	if !strings.Contains(csp, "frame-ancestors") {
+		t.Fatalf("CSP must forbid framing: %q", csp)
+	}
+	if resp.Header.Get("X-Frame-Options") == "" {
+		t.Fatal("X-Frame-Options must be set")
+	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatal("X-Content-Type-Options must be nosniff")
+	}
+}
+
+// TestCanvasCheckDoesNotLeakAnotherUser makes sure the connectivity check
+// only reports the caller's own Canvas account.
+func TestCanvasCheckDoesNotLeakAnotherUser(t *testing.T) {
+	f := newFixture(t)
+	// The shared client has a token (it belongs to somebody else), but the
+	// calling chat has none.
+	f.srv.conn.SetToken(testToken)
+	resp, payload := f.do(t, http.MethodPost, "/api/canvas/check", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%v)", resp.StatusCode, payload)
+	}
+	if payload["ok"] != false {
+		t.Fatalf("a chat without a token must not get a Canvas identity: %v", payload)
+	}
+	if payload["user"] != nil {
+		t.Fatalf("no user must be reported: %v", payload)
+	}
+}
+
 func TestUnreachableCanvasKeepsToken(t *testing.T) {
 	f := newFixture(t)
 	// Point the client at a dead address: the probe fails without an HTTP 401.

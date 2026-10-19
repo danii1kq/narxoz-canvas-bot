@@ -39,6 +39,13 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
 
+  /* Only http(s) links are turned into a link. Escaping alone does not stop
+     a "javascript:" URL. */
+  const safeURL = (u) => {
+    const s = String(u == null ? "" : u).trim();
+    return /^https?:\/\//i.test(s) ? s : "";
+  };
+
   const fmtNum = (v) => {
     if (v === null || v === undefined) return "—";
     return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(v);
@@ -544,7 +551,10 @@
     }
     lines.push(`</dl>`);
     if (a.url) {
-      lines.push(`<div class="actions"><a class="btn btn--primary" href="${esc(a.url)}" target="_blank" rel="noopener">Открыть в Canvas</a></div>`);
+      const href = safeURL(a.url);
+      if (href) {
+        lines.push(`<div class="actions"><a class="btn btn--primary" href="${esc(href)}" target="_blank" rel="noopener">Открыть в Canvas</a></div>`);
+      }
     }
 
     $("#sheet-body").innerHTML = lines.join("");

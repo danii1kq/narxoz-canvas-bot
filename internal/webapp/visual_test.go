@@ -78,7 +78,7 @@ func TestVisualApp(t *testing.T) {
 			seedPreview(t, st)
 		}
 		// Present the preview as a working, recently polled connection.
-		if err := conn.Persist(chatID, "visual-token-for-preview", model.User{Name: "LI DANIIL", Login: "danii1kq"}, true); err != nil {
+		if err := conn.Persist(chatID, "visual-token-for-preview", model.User{Name: "LI DANIIL", Login: "danii1kq"}, true, true); err != nil {
 			t.Fatalf("seed token: %v", err)
 		}
 		now := time.Now().UTC()

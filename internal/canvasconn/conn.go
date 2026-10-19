@@ -118,14 +118,18 @@ func (c *Conn) Probe(ctx context.Context, token string) (model.User, error) {
 	return c.client.WithToken(token).User(ctx)
 }
 
-// Save probes the token and, when Canvas accepts it, stores it sealed for the
-// chat (marking it verified).
+// Save probes the token and, when Canvas accepts it, stores it for the chat
+// (marking it verified).
+//
+// The token is not adopted for the background sync: only the chat flow does
+// that. A token entered in the Mini App must not silently take over the sync
+// of the whole bot.
 func (c *Conn) Save(ctx context.Context, chatID int64, token string) (model.User, error) {
 	u, err := c.Probe(ctx, token)
 	if err != nil {
 		return model.User{}, err
 	}
-	if err := c.Persist(chatID, token, u, true); err != nil {
+	if err := c.Persist(chatID, token, u, true, false); err != nil {
 		return model.User{}, err
 	}
 	return u, nil
@@ -134,7 +138,11 @@ func (c *Conn) Save(ctx context.Context, chatID int64, token string) (model.User
 // Persist stores a token for a chat. verified=false means Canvas could not be
 // reached at the time (the token is kept and checked in the background);
 // verified=true means a probe already succeeded.
-func (c *Conn) Persist(chatID int64, token string, u model.User, verified bool) error {
+//
+// adopt tells whether the token may become the token of the shared background
+// sync. Without a token from .env the first chat token drives that sync (the
+// store holds one shared dataset), but only the chat flow may claim it.
+func (c *Conn) Persist(chatID int64, token string, u model.User, verified, adopt bool) error {
 	sealed, err := c.box.Seal(token)
 	if err != nil {
 		return err
@@ -142,15 +150,25 @@ func (c *Conn) Persist(chatID int64, token string, u model.User, verified bool) 
 	if err := c.store.SaveChatToken(chatID, sealed, u, verified); err != nil {
 		return err
 	}
-	// Without a token from .env the first chat token drives the background
-	// sync (the store holds one shared dataset).
-	c.AdoptTokenIfOwner(chatID, token)
+	if adopt {
+		// Without a token from .env the first chat token drives the background
+		// sync (the store holds one shared dataset).
+		c.AdoptTokenIfOwner(chatID, token)
+	}
 	return nil
 }
 
 // ActiveChatID returns the chat whose token currently drives the background
 // sync, 0 when the sync uses the token from the environment or no token.
 func (c *Conn) ActiveChatID() int64 { return c.activeChat.Load() }
+
+// SetToken puts a token into the shared client without a chat owner. It is
+// used for a token that does not belong to a chat (the environment or a
+// restore from the database).
+func (c *Conn) SetToken(token string) {
+	c.client.SetToken(token)
+	c.activeChat.Store(0)
+}
 
 // AdoptTokenIfOwner hands the shared client the chat token when nothing else
 // is configured for the background sync.
@@ -217,7 +235,8 @@ func (c *Conn) Refresh(ctx context.Context, chatID int64) error {
 	if err := c.syncer.PollOnce(ctx); err != nil {
 		return err
 	}
-	if c.HasToken(chatID) {
+	// Only the token that the sync actually used may be marked as verified.
+	if c.HasToken(chatID) && c.ActiveChatID() == chatID {
 		if err := c.store.SetChatTokenVerified(chatID, true); err != nil {
 			c.log.Warn("could not mark chat token verified", "chat", chatID, "err", err)
 		}

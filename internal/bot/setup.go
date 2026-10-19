@@ -89,7 +89,7 @@ func (b *Bot) handlePastedToken(chatID int64, m *tgbotapi.Message) {
 
 	switch {
 	case err == nil:
-		if perr := b.conn.Persist(chatID, token, u, true); perr != nil {
+		if perr := b.conn.Persist(chatID, token, u, true, true); perr != nil {
 			b.log.Error("save canvas token failed", "chat", chatID, "err", perr)
 			b.tg.SendHTML(chatID, "🔴 Не удалось сохранить токен: "+html.EscapeString(perr.Error()))
 			return
@@ -148,7 +148,7 @@ func (b *Bot) finishSetup(chatID int64, token string, u model.User) {
 // finishSetupUnverified stores a token that could not be checked because
 // Canvas was unreachable. The background poll verifies it later.
 func (b *Bot) finishSetupUnverified(chatID int64, token string, cause error) {
-	if err := b.conn.Persist(chatID, token, model.User{}, false); err != nil {
+	if err := b.conn.Persist(chatID, token, model.User{}, false, true); err != nil {
 		b.log.Error("save canvas token failed", "chat", chatID, "err", err)
 		b.tg.SendHTML(chatID, "🔴 Не удалось сохранить токен в базе: "+html.EscapeString(err.Error()))
 		return

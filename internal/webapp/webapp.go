@@ -89,14 +89,14 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	mux.HandleFunc("/api/state", s.guarded(s.handleState))
-	mux.HandleFunc("/api/assignments", s.guarded(s.handleAssignments))
-	mux.HandleFunc("/api/courses", s.guarded(s.handleCourses))
-	mux.HandleFunc("/api/refresh", s.guarded(s.handleRefresh))
-	mux.HandleFunc("/api/settings/lead", s.guarded(s.handleSetLead))
-	mux.HandleFunc("/api/courses/", s.guarded(s.handleCourseMute))
+	mux.HandleFunc("/api/state", s.guardedMethods([]string{http.MethodGet}, s.handleState))
+	mux.HandleFunc("/api/assignments", s.guardedMethods([]string{http.MethodGet}, s.handleAssignments))
+	mux.HandleFunc("/api/courses", s.guardedMethods([]string{http.MethodGet}, s.handleCourses))
+	mux.HandleFunc("/api/refresh", s.guardedMethods([]string{http.MethodPost}, s.handleRefresh))
+	mux.HandleFunc("/api/settings/lead", s.guardedMethods([]string{http.MethodPut, http.MethodPost}, s.handleSetLead))
+	mux.HandleFunc("/api/courses/", s.guardedMethods([]string{http.MethodPut, http.MethodPost}, s.handleCourseMute))
 	mux.HandleFunc("/api/canvas/token", s.guardedCanvasToken)
-	mux.HandleFunc("/api/canvas/check", s.guarded(s.handleCanvasCheck))
+	mux.HandleFunc("/api/canvas/check", s.guardedMethods([]string{http.MethodPost}, s.handleCanvasCheck))
 
 	// The single-page app itself: index.html for "/" and any unknown path.
 	static, err := fs.Sub(assets, "assets")
@@ -107,7 +107,31 @@ func (s *Server) Handler() http.Handler {
 	s.static = static
 	mux.Handle("/", s.spaHandler(http.FileServer(http.FS(static))))
 
-	return mux
+	return securityHeaders(mux)
+}
+
+// securityHeaders sets the headers that protect the Mini App: it must not be
+// framed (clickjacking over the mute or disconnect buttons) and may only run
+// its own scripts plus the Telegram SDK. The headers are set by the app
+// itself, so they also apply when it is served without the Caddy proxy.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", strings.Join([]string{
+			"default-src 'self'",
+			"script-src 'self' https://telegram.org",
+			"style-src 'self' 'unsafe-inline'",
+			"img-src 'self' data:",
+			"connect-src 'self'",
+			"frame-ancestors 'self' https://web.telegram.org",
+			"base-uri 'none'",
+			"form-action 'none'",
+		}, "; "))
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Run serves the app until ctx is cancelled.
@@ -144,14 +168,24 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// guarded wraps a handler with Telegram authentication.
-func (s *Server) guarded(fn func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
+// guardedMethods wraps a handler with Telegram authentication and an HTTP
+// method check. The endpoints that change something must not answer a GET:
+// a link preview, a prefetch or a crawler would otherwise trigger a full
+// Canvas sync.
+func (s *Server) guardedMethods(methods []string, fn func(http.ResponseWriter, *http.Request, User)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := s.authenticate(w, r)
 		if !ok {
 			return
 		}
-		fn(w, r, u)
+		for _, m := range methods {
+			if r.Method == m {
+				fn(w, r, u)
+				return
+			}
+		}
+		w.Header().Set("Allow", strings.Join(methods, ", "))
+		writeError(w, http.StatusMethodNotAllowed, "метод не поддерживается")
 	}
 }
 
@@ -250,6 +284,13 @@ func (s *Server) refreshAllowed(chatID int64) (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	// Drop the expired entries, so the map does not keep every user that
+	// ever opened the app.
+	for id, last := range s.lastRefresh {
+		if s.cfg.RefreshCooldown-now.Sub(last) <= 0 {
+			delete(s.lastRefresh, id)
+		}
+	}
 	if last, ok := s.lastRefresh[chatID]; ok {
 		if wait := s.cfg.RefreshCooldown - now.Sub(last); wait > 0 {
 			return wait, false

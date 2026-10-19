@@ -6,19 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#ffffff">
 <title>Canvas</title>
-<script>
-  /* Apply the colour scheme before first paint so the app never flashes the
-     wrong theme. Telegram's colourScheme (when present) takes over right after
-     the SDK loads. */
-  (function () {
-    try {
-      var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-      document.documentElement.dataset.scheme = dark ? "dark" : "light";
-    } catch (e) {
-      document.documentElement.dataset.scheme = "light";
-    }
-  })();
-</script>
+<script src="/theme.js"></script>
 <link rel="stylesheet" href="/styles.css">
 <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
 <script src="/app.js" defer></script>

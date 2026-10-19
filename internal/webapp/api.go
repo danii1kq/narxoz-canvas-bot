@@ -352,7 +352,7 @@ func (s *Server) handleCanvasToken(w http.ResponseWriter, r *http.Request, u Use
 		return
 	}
 	// Canvas is unreachable: keep the token and verify it in the background.
-	if perr := s.conn.Persist(u.ID, token, model.User{}, false); perr != nil {
+	if perr := s.conn.Persist(u.ID, token, model.User{}, false, false); perr != nil {
 		s.log.Error("webapp save token failed", "chat", u.ID, "err", perr)
 		writeError(w, http.StatusInternalServerError, "не удалось сохранить токен")
 		return
@@ -379,6 +379,12 @@ func (s *Server) handleCanvasTokenDelete(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) handleCanvasCheck(w http.ResponseWriter, r *http.Request, u User) {
+	// Only the caller's own token is checked. Falling back to the shared
+	// client would answer with the Canvas account of somebody else.
+	if !s.conn.HasToken(u.ID) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "Canvas API не подключён"})
+		return
+	}
 	ctx, cancel := s.requestContext(r)
 	defer cancel()
 	canvasUser, err := s.conn.Client(u.ID).User(ctx)

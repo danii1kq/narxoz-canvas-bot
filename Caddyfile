@@ -20,6 +20,8 @@
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		-Server
+		# The Content-Security-Policy and X-Frame-Options are set by the app
+		# itself (internal/webapp), so they also apply without this proxy.
 	}
 
 	log {
