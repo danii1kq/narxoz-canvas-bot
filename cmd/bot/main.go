@@ -63,6 +63,12 @@ func run() error {
 		log.Warn("CANVAS_TOKEN_SECRET is not set: Canvas tokens entered in the chat are stored base64-encoded (reversible), not encrypted")
 	}
 	cv := canvas.New(cfg.CanvasBaseURL, cfg.CanvasToken, 10, cfg.RequestTimeout, log, canvas.WithProxy(cfg.CanvasProxy))
+	// The proxy is off by default. The traffic to Canvas should go through a
+	// Kazakh IP: a server outside Kazakhstan needs CANVAS_PROXY.
+	proxyState := "disabled (the traffic goes out directly from this host)"
+	if cfg.CanvasProxy != "" {
+		proxyState = "enabled"
+	}
 
 	p := poller.New(cfg, cv, st, tg, fm, stats, log)
 	conn := canvasconn.New(cv, st, box, p, cfg.CanvasToken, log)
@@ -149,6 +155,7 @@ func run() error {
 		"db", cfg.DBPath,
 		"telegram_username", tg.API().Self.UserName,
 		"canvas_token", tokenSource,
+		"canvas_proxy", proxyState,
 		"token_encryption", box.Enabled(),
 		"webapp_url", cfg.WebAppURL,
 		"webapp_addr", cfg.WebAppAddr,

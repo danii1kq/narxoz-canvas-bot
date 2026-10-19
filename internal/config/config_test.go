@@ -85,6 +85,50 @@ func TestLoadCanvasTokenOptional(t *testing.T) {
 	}
 }
 
+// The proxy is off by default and a wrong value must not be ignored: a
+// silent fallback to a direct connection would send the Canvas traffic from
+// an address the university blocks.
+func TestLoadCanvasProxy(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "tg-token")
+	t.Setenv("CANVAS_API_TOKEN", "cv-token")
+	clearOptional(t)
+
+	// Off by default.
+	t.Setenv("CANVAS_PROXY", "")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CanvasProxy != "" {
+		t.Fatalf("the proxy must be disabled by default, got %q", cfg.CanvasProxy)
+	}
+
+	// It can be switched on.
+	for _, v := range []string{
+		"socks5://user:pass@proxy-host:1080",
+		"http://proxy-host:8080",
+		"https://proxy-host:8443",
+		"socks5h://proxy-host:1080",
+	} {
+		t.Setenv("CANVAS_PROXY", v)
+		cfg, err = config.Load()
+		if err != nil {
+			t.Fatalf("Load with CANVAS_PROXY=%q: %v", v, err)
+		}
+		if cfg.CanvasProxy != v {
+			t.Fatalf("proxy = %q, want %q", cfg.CanvasProxy, v)
+		}
+	}
+
+	// A wrong value stops the bot at startup.
+	for _, v := range []string{"://not a url", "ftp://proxy-host", "proxy-host:1080", "http://"} {
+		t.Setenv("CANVAS_PROXY", v)
+		if _, err := config.Load(); err == nil {
+			t.Fatalf("expected an error for CANVAS_PROXY=%q", v)
+		}
+	}
+}
+
 func TestLoadInvalidChatID(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "tg-token")
 	t.Setenv("CANVAS_API_TOKEN", "cv-token")

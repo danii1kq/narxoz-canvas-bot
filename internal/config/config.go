@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -67,7 +68,9 @@ func Load() (Config, error) {
 
 	c.CanvasBaseURL = envOr("CANVAS_BASE_URL", "https://canvas.narxoz.kz")
 	c.CanvasBaseURL = strings.TrimRight(c.CanvasBaseURL, "/")
-	c.CanvasProxy = strings.TrimSpace(os.Getenv("CANVAS_PROXY"))
+	if c.CanvasProxy, err = parseProxy(os.Getenv("CANVAS_PROXY")); err != nil {
+		return c, err
+	}
 
 	if c.PollInterval, err = envDuration("POLL_INTERVAL", 5*time.Minute); err != nil {
 		return c, err
@@ -130,6 +133,32 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseProxy validates the optional proxy address.
+//
+// The proxy is off by default: an empty value means the Canvas traffic goes
+// out directly from the host. A wrong value is rejected here instead of being
+// ignored, because silently continuing without a proxy would send the traffic
+// from an address that the university blocks.
+func parseProxy(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("CANVAS_PROXY is not a valid URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return "", fmt.Errorf("CANVAS_PROXY must use http, https, socks5 or socks5h (got %q)", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("CANVAS_PROXY must contain a host")
+	}
+	return raw, nil
 }
 
 func envDuration(key string, def time.Duration) (time.Duration, error) {

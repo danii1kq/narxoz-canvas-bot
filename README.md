@@ -51,11 +51,23 @@ Two practical conclusions:
    proxy with an address that is not blocked. See
    [Proxy (CANVAS_PROXY)](#proxy-canvas_proxy).
 
+The third rule follows from the same cause: the traffic to Canvas must go
+through a **Kazakh IP**. A server in Kazakhstan is fine as it is; a server
+anywhere else needs the proxy switched on.
+
 The data is not lost: the SQLite database with the settings, the mute state and
 the sealed tokens stays in the `bot-data` volume, so the bot continues from
 where it stopped.
 
 ## Proxy (CANVAS_PROXY)
+
+**The rule:** the traffic to Canvas must go through a **Kazakh IP**.
+
+- The bot runs in Kazakhstan: nothing to do, the proxy stays **off**.
+- The bot runs somewhere else: switch the proxy **on** and point it at a
+  Kazakh address (a Kazakh VDS, a local proxy in Kazakhstan, a residential
+  line). Otherwise the university sees requests from an unknown address and
+  blocks it, which is what ended this project.
 
 `CANVAS_PROXY` routes the **Canvas traffic only** through an HTTP(S) or SOCKS5
 proxy. Telegram keeps using the direct connection, and nothing else in the
@@ -63,15 +75,20 @@ project changes.
 
 ```dotenv
 # .env
-CANVAS_PROXY=socks5://user:pass@proxy-host:1080
+CANVAS_PROXY=socks5://user:pass@kz-proxy-host:1080
 ```
+
+**The proxy is off by default.** An empty value means the Canvas traffic goes
+out directly from the host, which is the right setup for a server in
+Kazakhstan. A wrong value is rejected at startup with a clear error instead of
+being ignored, because silently continuing without a proxy would send the
+traffic from exactly the address that gets blocked.
 
 **What it gives**
 
-- **A different source IP for Canvas.** The university blocks the address of
-  the data center, not the address of the proxy. A proxy in Kazakhstan (or a
-  residential one) keeps the bot working while the server itself stays
-  blocked.
+- **A Kazakh source IP for Canvas.** The university blocks the address of the
+  data center, not the address of the proxy. A proxy in Kazakhstan keeps the
+  bot working while the server itself stays blocked.
 - **A way out of a throttled or filtered route.** Some providers block
   `canvas.narxoz.kz` entirely: the connection hangs until the timeout. The
   proxy provides a route that works.
@@ -89,11 +106,12 @@ CANVAS_PROXY=socks5://user:pass@proxy-host:1080
 
 **How it behaves**
 
-- An invalid proxy URL is logged as an error and the client falls back to a
-  direct request, so a typo never breaks the bot completely.
+- Accepted schemes: `http`, `https`, `socks5`, `socks5h`.
 - The proxy is only used for `CANVAS_BASE_URL`; the environment variables
   `HTTPS_PROXY` / `HTTP_PROXY` are honoured for other requests by the Go
   standard library.
+- The startup log states whether the proxy is on (`canvas_proxy`), and the
+  Canvas client logs the host it routes through.
 - Failures that point at the proxy (wrong address, DNS, refused connection)
   are reported to the chat instead of the generic Canvas error.
 
@@ -223,7 +241,7 @@ is missing or malformed.
 | `CANVAS_API_TOKEN`      | no       | *(unset)*                   | Canvas access token. Leave empty and connect Canvas with `/setup` in the chat. When set, it is authoritative for the background sync. |
 | `CANVAS_TOKEN_SECRET`   | no       | *(unset)*                   | Key that encrypts chat-entered tokens at rest (AES-256-GCM). Empty means base64 obfuscation only. |
 | `CANVAS_BASE_URL`       | no       | `https://canvas.narxoz.kz`  | Canvas instance URL.                                       |
-| `CANVAS_PROXY`          | no       | *(unset)*                   | Proxy for Canvas traffic only (`http://user:pass@host:port`, `socks5://host:1080`). For hosts that cannot reach Canvas directly. |
+| `CANVAS_PROXY`          | no       | *(unset, disabled)*        | Proxy for Canvas traffic only (`http://user:pass@host:port`, `socks5://host:1080`). **Disabled by default.** Turn it on when the server is not in Kazakhstan: the traffic to Canvas must go through a Kazakh IP. |
 | `TELEGRAM_CHAT_ID`      | no       | *(unset)*                   | Primary notification chat. If unset, every chat that pressed `/start` is notified. |
 | `TELEGRAM_API_ENDPOINT` | no       | *(unset)*                   | Self-hosted Bot API endpoint; must contain two `%s` (token, method). |
 | `POLL_INTERVAL`         | no       | `5m`                        | Sync frequency (bare numbers mean minutes).                |
@@ -391,6 +409,12 @@ Any small Linux VDS (1 vCPU / 1 GB RAM / 10 GB disk is plenty) works. With the
 Mini App enabled, ports **80 and 443** must be reachable from the internet (80 is
 needed for the Let's Encrypt challenge), so pick a host where they are not
 blocked.
+
+**Pick the country of the server deliberately.** The traffic to Canvas should
+go through a Kazakh IP. A VDS in Kazakhstan works without any proxy; a VDS
+anywhere else needs `CANVAS_PROXY` pointing at a Kazakh address, otherwise the
+university blocks the server (see
+[Proxy (CANVAS_PROXY)](#proxy-canvas_proxy)).
 
 **a. Prepare the server (once).**
 
@@ -582,13 +606,14 @@ curl -sS -o /dev/null -w 'http=%{http_code} total=%{time_total}s\n' --max-time 2
 If the first command hangs while the resolved-IP one works, the problem is DNS;
 if both hang, the route to the Canvas IP is filtered. Options: move the bot to a
 VDS in Kazakhstan, run it on a network that can reach Canvas, or keep the VDS and
-route Canvas traffic through a proxy with a local IP:
+route the Canvas traffic through a proxy with a Kazakh IP:
 
 ```dotenv
 # .env on the VDS
-CANVAS_PROXY=socks5://user:pass@kazakh-proxy-host:1080
+CANVAS_PROXY=socks5://user:pass@kz-proxy-host:1080
 ```
 `CANVAS_PROXY` affects Canvas only: Telegram keeps using the direct connection.
+The proxy is off by default, so it has to be switched on explicitly.
 
 **"Canvas отклонил токен (401/403)".** The token itself is wrong (not issued on
 `CANVAS_BASE_URL`, expired, or copied incompletely). Generate a new one and send
