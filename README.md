@@ -126,13 +126,22 @@ CANVAS_PROXY=socks5://user:pass@proxy-host:1080
 - **Reminder job** (separate schedule) applies only to **unsubmitted**
   assignments; submitting at any time stops future reminders.
 - **Courses that disappear** from the API are marked inactive (never deleted),
-  so a transient API glitch cannot trigger false "new assignment" alerts.
+  so a transient API glitch cannot trigger false "new assignment" alerts. A
+  course whose fetch fails keeps its assignments and their deadlines visible:
+  one broken course cannot empty the dataset.
 - **Commands remain** as an alternative to the app (`/status`, `/refresh`,
   `/setup`, `/mute`, ...); when the app is configured they answer with compact
   summaries instead of interactive lists. Without `WEBAPP_URL` the bot keeps the
   full menu keyboard and inline lists, so nothing regresses for chat-only use.
+- **Only private chats are notified.** A chat is subscribed when it presses
+  **/start** in a private chat; groups are never subscribed, so personal
+  assignments and grades cannot leak into a group. The token dialog works in a
+  private chat only, because the bot deletes the message with the token.
 - **Reliability**: JSON `slog` logging, one-off "token missing/expired" notice,
   panic recovery per update and per job, graceful SIGINT/SIGTERM shutdown.
+- **The bot never freezes**: a manual refresh and the first sync after `/setup`
+  run in the background, and the polls are serialised, so the bot keeps
+  answering while Canvas is being walked.
 
 ## Requirements
 
@@ -252,11 +261,17 @@ Notes:
 - With `CANVAS_API_TOKEN` set in `.env`, that token drives the background sync
   for all subscribers; chat tokens are still used for on-demand checks in the
   chat they were entered in.
-- Without `CANVAS_API_TOKEN`, the **most recently connected** chat token drives
-  the background sync (the store keeps one shared dataset, it is designed as a
-  personal bot).
+- Without `CANVAS_API_TOKEN`, the **first** chat token that connects drives the
+  background sync (the store keeps one shared dataset, it is designed as a
+  personal bot). A token entered in the Mini App never takes that sync over.
 - The SQLite database holds the sealed token. Set `CANVAS_TOKEN_SECRET` on a
-  shared/VDS machine; without it the token is only base64-obfuscated.
+  shared/VDS machine; without it the token is only base64-obfuscated, and the
+  bot says so in the log at startup.
+- The token dialog works in a **private chat only**: the bot deletes the
+  message with the token, and that must not happen in a group.
+- The first sync after `/setup` runs in the background, so the bot keeps
+  answering while Canvas is being walked. The list arrives in the chat a bit
+  later.
 
 ## The Mini App (Telegram Web App)
 
@@ -309,9 +324,19 @@ not shipped to the browser):
   (`Authorization: tma <initData>`), verified with HMAC-SHA256 over the sorted
   field list, keyed by `HMAC_SHA256("WebAppData", bot_token)`; payloads older
   than 24 h are rejected.
+- The endpoints check the HTTP method: the ones that change something answer
+  `405` to a `GET`, so a link preview or a crawler cannot trigger a Canvas
+  sync.
 - The Telegram user id is used as the chat id, so the app and the bot share the
   same Canvas token, mutes and settings.
 - With `TELEGRAM_CHAT_ID` set, the API answers only that user (403 otherwise).
+  Without it, the app is open to every user of the bot, so set it when the bot
+  is not strictly personal.
+- The connectivity check reports only the caller's own Canvas account, and a
+  token entered in the app never takes over the background sync.
+- The app sends a strict `Content-Security-Policy` (its own scripts plus the
+  Telegram SDK only), `X-Frame-Options` and `X-Content-Type-Options`, also
+  when it runs without the Caddy proxy.
 - The static page is embedded in the binary (`go:embed`); no third-party assets
   are loaded except Telegram's own SDK script, and the interface renders without
   it.
@@ -345,6 +370,10 @@ Two services come up:
   a healthcheck that polls `/healthz`.
 - **caddy**: HTTPS termination and an automatic Let's Encrypt certificate for
   `WEBAPP_DOMAIN`, publishing ports 80 and 443.
+
+The bot process runs as an unprivileged user (uid 10001). A small entrypoint
+prepares the data volume and then drops the privileges, so an installation that
+was created by an older (root) image keeps working after an update.
 
 Without `WEBAPP_DOMAIN` the app is simply not advertised in Telegram (the chat
 keeps its keyboard) and Caddy serves a local placeholder site on `localhost`.
@@ -476,7 +505,8 @@ docker compose up -d bot
 With the Mini App configured the chat stays a notification channel: the reply
 keyboard is gone, the **Open** button next to the input opens the app, and these
 commands answer with compact summaries (without the app they keep their
-interactive lists and keyboard):
+interactive lists and keyboard). The commands work in a group as well, but the
+bot never sends assignments, grades or reminders there.
 
 | Command          | Behaviour                                                    |
 |------------------|--------------------------------------------------------------|
