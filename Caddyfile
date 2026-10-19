@@ -4,8 +4,13 @@
 # automatically (HTTP-01 challenge, so port 80 must be reachable from the
 # internet) and proxies everything to the bot container, which also serves the
 # Mini App and its JSON API on :8080.
+#
+# The default value of $WEBAPP_DOMAIN keeps the file valid when the variable
+# is not set at all: an empty site address would be parsed as a global options
+# block and Caddy would refuse to start. With no domain configured the site is
+# a local placeholder and the Mini App stays unpublished in Telegram.
 
-{$WEBAPP_DOMAIN} {
+{$WEBAPP_DOMAIN:localhost} {
 	encode zstd gzip
 
 	reverse_proxy bot:8080

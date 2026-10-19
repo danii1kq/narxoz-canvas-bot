@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -18,6 +19,25 @@ func openTemp(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return st
+}
+
+// TestOpen_CreatesMissingParentDirectory makes sure a nested DB_PATH works
+// without a manual "mkdir -p" (SQLite refuses to create the file when the
+// directory is missing).
+func TestOpen_CreatesMissingParentDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "data")
+	path := filepath.Join(dir, "bot.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("parent directory was not created: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database file was not created: %v", err)
+	}
 }
 
 func TestSyncCourses_MarksMissingInactiveAndPreservesMute(t *testing.T) {

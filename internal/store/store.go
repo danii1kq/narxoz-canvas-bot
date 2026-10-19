@@ -6,6 +6,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	// Pure-Go SQLite driver (no CGO).
@@ -78,6 +80,15 @@ CREATE TABLE IF NOT EXISTS chat_tokens (
 // Open opens (creating if needed) the SQLite database at path, runs the
 // migrations and returns a Store. Use ":memory:" for an ephemeral database.
 func Open(path string) (*Store, error) {
+	// Create the parent directory so that a nested DB_PATH works out of the box
+	// (e.g. /data/bot.db in a container or ./data/bot.db locally). SQLite
+	// itself refuses to create the file when the directory is missing.
+	if dir := dbDir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("store: create directory %q: %w", dir, err)
+		}
+	}
+
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
@@ -99,6 +110,24 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: migrate columns: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// dbDir returns the directory that has to exist for the database file at
+// path, or "" when no directory has to be created (in-memory databases and
+// plain file names in the working directory).
+func dbDir(path string) string {
+	// Strip the DSN parameters, they are not part of the file name.
+	if i := strings.IndexAny(path, "?"); i >= 0 {
+		path = path[:i]
+	}
+	if path == "" || strings.Contains(path, ":memory:") {
+		return ""
+	}
+	dir := filepath.Dir(path)
+	if dir == "." {
+		return ""
+	}
+	return dir
 }
 
 // migrate adds columns introduced after the first release so an existing

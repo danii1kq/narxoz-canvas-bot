@@ -106,31 +106,31 @@ func run() error {
 
 	// The Mini App runs in the same process and serves the same data. Its
 	// public URL is advertised to Telegram as the chat menu button ("Open").
-	var app *webapp.Server
-	if cfg.WebAppURL != "" || cfg.WebAppDevChatID != 0 {
-		auth := webapp.NewAuth(cfg.TelegramToken, cfg.WebAppDevChatID)
-		app = webapp.New(webapp.Config{
-			Addr:            cfg.WebAppAddr,
-			AppURL:          cfg.WebAppURL,
-			OwnerChatID:     cfg.TelegramChatID,
-			LeadHours:       cfg.ReminderLead,
-			RequestTimeout:  cfg.RequestTimeout,
-			RefreshCooldown: 20 * time.Second,
-		}, st, conn, stats, fm, auth, log)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := app.Run(ctx); err != nil {
-				log.Error("mini app stopped", "err", err)
-			}
-		}()
-		if cfg.WebAppDevChatID != 0 {
-			log.Warn("WEBAPP_DEV_CHAT_ID is set: the Mini App accepts unauthenticated local requests",
-				"dev_chat_id", cfg.WebAppDevChatID)
+	// The HTTP server always starts so that /healthz is available and the
+	// reverse proxy in front of it has something to talk to; only the button
+	// in the chat depends on WEBAPP_URL.
+	auth := webapp.NewAuth(cfg.TelegramToken, cfg.WebAppDevChatID)
+	app := webapp.New(webapp.Config{
+		Addr:            cfg.WebAppAddr,
+		AppURL:          cfg.WebAppURL,
+		OwnerChatID:     cfg.TelegramChatID,
+		LeadHours:       cfg.ReminderLead,
+		RequestTimeout:  cfg.RequestTimeout,
+		RefreshCooldown: 20 * time.Second,
+	}, st, conn, stats, fm, auth, log)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := app.Run(ctx); err != nil {
+			log.Error("mini app stopped", "err", err)
 		}
-		if cfg.WebAppURL != "" {
-			setMenuButton(ctx, tg, cfg.WebAppURL, log)
-		}
+	}()
+	if cfg.WebAppDevChatID != 0 {
+		log.Warn("WEBAPP_DEV_CHAT_ID is set: the Mini App accepts unauthenticated local requests",
+			"dev_chat_id", cfg.WebAppDevChatID)
+	}
+	if cfg.WebAppURL != "" {
+		setMenuButton(ctx, tg, cfg.WebAppURL, log)
 	}
 
 	log.Info("narxoz-canvas-bot started",

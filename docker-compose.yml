@@ -9,12 +9,19 @@ services:
     environment:
       # Database is persisted on a named volume.
       DB_PATH: /data/bot.db
-      TZ: Asia/Almaty
+      # Resolved from the shell or .env so the TZ knob stays configurable.
+      TZ: ${TZ:-Asia/Almaty}
       # The Mini App listens here; Caddy terminates HTTPS in front of it.
       WEBAPP_ADDR: :8080
       WEBAPP_URL: ${WEBAPP_URL:-}
     volumes:
       - bot-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- \"http://127.0.0.1:$${WEBAPP_ADDR##*:}/healthz\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
@@ -22,8 +29,9 @@ services:
         max-file: "3"
 
   # HTTPS for the Mini App ("Open" button in the chat). Started together with
-  # the bot; without WEBAPP_DOMAIN in .env Caddy has no site and the app is not
-  # reachable from Telegram — run `docker compose up -d bot` in that case.
+  # the bot; without WEBAPP_DOMAIN in .env Caddy has no public site and the app
+  # is not reachable from Telegram (it keeps running with a local placeholder
+  # site). Run `docker compose up -d bot` to skip Caddy completely.
   caddy:
     image: caddy:2-alpine
     container_name: narxoz-canvas-caddy
@@ -31,7 +39,9 @@ services:
     depends_on:
       - bot
     environment:
-      WEBAPP_DOMAIN: ${WEBAPP_DOMAIN:-}
+      # Never empty: an empty site address makes the Caddyfile invalid and the
+      # container would crash-loop.
+      WEBAPP_DOMAIN: ${WEBAPP_DOMAIN:-localhost}
     ports:
       - "80:80"
       - "443:443"
