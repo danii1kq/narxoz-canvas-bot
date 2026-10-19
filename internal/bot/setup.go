@@ -28,8 +28,16 @@ const setupPrompt = "🔑 <b>Подключение Canvas API</b>\n\n" +
 // minTokenLen is a sanity bound on a pasted token before calling Canvas.
 const minTokenLen = 10
 
-// startSetup asks the chat to paste its Canvas API token.
-func (b *Bot) startSetup(chatID int64) {
+// startSetup asks the chat to paste its Canvas API token. The token dialog
+// only works in a private chat: in a group the bot would read and delete
+// messages of other people.
+func (b *Bot) startSetup(chatID int64, private bool) {
+	if !private {
+		b.tg.SendHTML(chatID, "🔑 Токен Canvas можно подключить только в личном чате с ботом: "+
+			"в группе бот не должен читать и удалять чужие сообщения.\n\n"+
+			"Откройте бота в личке и отправьте /setup ещё раз.")
+		return
+	}
 	b.setPending(chatID, true)
 	if tok, row, ok := b.conn.ChatToken(chatID); ok {
 		b.tg.SendHTML(chatID, "🔁 Сейчас подключён токен <code>"+html.EscapeString(maskToken(tok))+
@@ -211,7 +219,7 @@ func (b *Bot) sendCanvasStatus(chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("🔑 Вставить / заменить токен", cbToken),
 		),
 	}
-	_ = b.tg.SendInline(chatID, text, tgbotapi.NewInlineKeyboardMarkup(rows...))
+	b.sendInline(chatID, text, tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
 
 // disconnectCanvas drops the token stored for this chat.

@@ -317,8 +317,68 @@ func TestUnreachableCanvasKeepsToken(t *testing.T) {
 	}
 }
 
-// --- fakes ---
+// TestGroupChatIsNeverSubscribedAndKeepsItsMessages makes sure a group chat
+// does not receive notifications and that the bot never treats a group
+// message as a Canvas token (it would delete somebody else's message).
+func TestGroupChatIsNeverSubscribedAndKeepsItsMessages(t *testing.T) {
+	const chatID = int64(7001)
 
+	ft := &fakeTelegram{}
+	tgSrv := httptest.NewServer(http.HandlerFunc(ft.serveHTTP))
+	defer tgSrv.Close()
+
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	tg, err := notify.NewTelegram("test-token", tgSrv.URL+"/bot%s/%s", log)
+	if err != nil {
+		t.Fatalf("fake telegram: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	box := secrets.NewBox("test-secret")
+	cv := canvas.New("http://127.0.0.1:1", "", 1000, 10*time.Second, log)
+	cfg := config.Config{
+		PollInterval:     time.Minute,
+		ReminderInterval: time.Minute,
+		ReminderLead:     24,
+		TZ:               time.UTC,
+		RequestTimeout:   10 * time.Second,
+	}
+	fm := notify.NewFormatter(time.UTC)
+	stats := runtime.New()
+	p := poller.New(cfg, cv, st, tg, fm, stats, log)
+	conn := canvasconn.New(cv, st, box, p, "", log)
+	b := New(tg, st, conn, fm, stats, log, time.UTC, 0, "", 10*time.Second)
+
+	// /start in a group must not subscribe the chat to notifications.
+	b.handle(groupMsgUpdate(chatID, 1, "/start"))
+	if subs := st.Subscribers(); len(subs) != 0 {
+		t.Fatalf("a group chat must not be subscribed, got %v", subs)
+	}
+
+	// /setup in a group must be refused and must not start the token dialog.
+	b.handle(groupMsgUpdate(chatID, 2, "/setup"))
+	if ft.anyContains("Подключение Canvas API") {
+		t.Fatalf("the token dialog must not start in a group; sent=%v", ft.sentTexts())
+	}
+	if b.isPending(chatID) {
+		t.Fatal("a group chat must not wait for a Canvas token")
+	}
+
+	// An ordinary group message must not be treated as a token either.
+	b.handle(groupMsgUpdate(chatID, 3, "просто сообщение"))
+	if ft.deletedMessage(3) {
+		t.Fatal("the bot must not delete messages in a group")
+	}
+	if _, ok := st.ChatToken(chatID); ok {
+		t.Fatal("a group message must never be stored as a Canvas token")
+	}
+}
+
+// --- fakes ---
 // fakeTelegram is a minimal Bot API server implementing getMe, sendMessage,
 // deleteMessage and answerCallbackQuery; enough for a full run of the bot's
 // update handler.
@@ -411,7 +471,19 @@ func msgUpdate(chatID int64, msgID int, text string) tgbotapi.Update {
 		UpdateID: 1,
 		Message: &tgbotapi.Message{
 			MessageID: msgID,
-			Chat:      &tgbotapi.Chat{ID: chatID},
+			Chat:      &tgbotapi.Chat{ID: chatID, Type: "private"},
+			Text:      text,
+		},
+	}
+}
+
+// groupMsgUpdate builds a group-chat text update.
+func groupMsgUpdate(chatID int64, msgID int, text string) tgbotapi.Update {
+	return tgbotapi.Update{
+		UpdateID: 1,
+		Message: &tgbotapi.Message{
+			MessageID: msgID,
+			Chat:      &tgbotapi.Chat{ID: chatID, Type: "supergroup"},
 			Text:      text,
 		},
 	}

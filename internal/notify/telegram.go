@@ -4,7 +4,9 @@
 package notify
 
 import (
+	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -50,6 +52,11 @@ func (c *Client) send(cfg tgbotapi.Chattable) error {
 		}
 		if isTolerated(err) {
 			return errTolerated
+		}
+		// A permanent rejection (message too long, broken HTML, unknown chat)
+		// will fail again on every attempt, so retrying only blocks the bot.
+		if isPermanent(err) {
+			return err
 		}
 		if i == c.retries {
 			break
@@ -181,6 +188,21 @@ func isTolerated(err error) bool {
 		strings.Contains(msg, "message can't be edited"),
 		strings.Contains(msg, "message to delete not found"):
 		return true
+	}
+	return false
+}
+
+// isPermanent reports whether err is a rejection that retrying cannot fix.
+// Telegram answers 4xx for a malformed request (a message that is too long,
+// broken HTML entities, an unknown chat); only 429 and 5xx are worth
+// retrying.
+func isPermanent(err error) bool {
+	var apiErr *tgbotapi.Error
+	if errors.As(err, &apiErr) {
+		if apiErr.Code == http.StatusTooManyRequests {
+			return false
+		}
+		return apiErr.Code >= 400 && apiErr.Code < 500
 	}
 	return false
 }

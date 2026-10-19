@@ -214,18 +214,23 @@ func viewTitle(view string) string {
 	}
 }
 
+// maxSearchHits caps how many assignments a search result lists. Telegram
+// rejects messages longer than 4096 characters, and a long list would be
+// rejected as a whole instead of being shown partially.
+const maxSearchHits = 20
+
 func (b *Bot) sendView(chatID int64, view string, param int64, page int) {
 	if b.appEnabled() {
 		b.tg.SendHTML(chatID, b.appHint(viewTitle(view)))
 		return
 	}
 	text, kb := b.renderView(chatID, view, param, page)
-	_ = b.tg.SendInline(chatID, text, kb)
+	b.sendInline(chatID, text, kb)
 }
 
 func (b *Bot) editView(chatID int64, msgID int, view string, param int64, page int) {
 	text, kb := b.renderView(chatID, view, param, page)
-	_ = b.tg.EditInline(chatID, msgID, text, kb)
+	b.editInline(chatID, msgID, text, kb)
 }
 
 func (b *Bot) sendCourses(chatID int64) {
@@ -234,7 +239,7 @@ func (b *Bot) sendCourses(chatID int64) {
 		return
 	}
 	text, kb := b.renderView(chatID, "courses", 0, 0)
-	_ = b.tg.SendInline(chatID, text, kb)
+	b.sendInline(chatID, text, kb)
 }
 
 // renderSettings builds the settings menu: Canvas connection, per-course mute
@@ -290,7 +295,7 @@ func (b *Bot) doInterval(chatID int64, msgID int, cbID string) {
 		return
 	}
 	text, kb := b.renderSettings(chatID)
-	_ = b.tg.EditInline(chatID, msgID, text, kb)
+	b.editInline(chatID, msgID, text, kb)
 	b.tg.AnswerCallback(cbID, "⏰ Напоминание будет за "+strconv.Itoa(next)+" ч", false)
 }
 
@@ -302,7 +307,7 @@ func (b *Bot) doToggleMute(chatID int64, msgID int, courseID int64, cbID string)
 		return
 	}
 	text, kb := b.renderSettings(chatID)
-	_ = b.tg.EditInline(chatID, msgID, text, kb)
+	b.editInline(chatID, msgID, text, kb)
 	if muted {
 		b.tg.AnswerCallback(cbID, "🔕 Уведомления курса выключены", false)
 	} else {
@@ -349,7 +354,7 @@ func (b *Bot) doSync(chatID int64, msgID int, cbID, view string, param int64, pa
 		return
 	}
 	text, kb := b.renderView(chatID, view, param, page)
-	_ = b.tg.EditInline(chatID, msgID, text, kb)
+	b.editInline(chatID, msgID, text, kb)
 	b.tg.AnswerCallback(cbID, "✅ Данные обновлены", false)
 }
 
@@ -359,7 +364,7 @@ func (b *Bot) sendSettings(chatID int64) {
 		return
 	}
 	text, kb := b.renderSettings(chatID)
-	_ = b.tg.SendInline(chatID, text, kb)
+	b.sendInline(chatID, text, kb)
 }
 
 // settingsHint is the compact settings summary sent when the Mini App owns the
@@ -383,7 +388,7 @@ func (b *Bot) settingsHint(chatID int64) string {
 
 func (b *Bot) editSettings(chatID int64, msgID int) {
 	text, kb := b.renderSettings(chatID)
-	_ = b.tg.EditInline(chatID, msgID, text, kb)
+	b.editInline(chatID, msgID, text, kb)
 }
 
 // searchCourse finds courses (and, as a fallback, assignments) by substring.
@@ -409,7 +414,7 @@ func (b *Bot) searchCourse(chatID int64, query string) {
 			return
 		}
 		text, kb := b.renderView(chatID, "course", matches[0].ID, 0)
-		_ = b.tg.SendInline(chatID, text, kb)
+		b.sendInline(chatID, text, kb)
 	case len(matches) > 1:
 		if b.appEnabled() {
 			var sb strings.Builder
@@ -427,7 +432,7 @@ func (b *Bot) searchCourse(chatID int64, query string) {
 				tgbotapi.NewInlineKeyboardButtonData(truncate(c.Name, 30), cbPage("course", c.ID, 0)),
 			))
 		}
-		_ = b.tg.SendInline(chatID, "🔎 Найдено курсов: "+strconv.Itoa(len(matches)), tgbotapi.NewInlineKeyboardMarkup(rows...))
+		b.sendInline(chatID, "🔎 Найдено курсов: "+strconv.Itoa(len(matches)), tgbotapi.NewInlineKeyboardMarkup(rows...))
 	default:
 		// Fall back to searching assignment names.
 		now := time.Now().UTC()
@@ -438,16 +443,29 @@ func (b *Bot) searchCourse(chatID int64, query string) {
 			}
 		}
 		if len(hits) == 0 {
-			_ = b.tg.SendHTML(chatID, "Ничего не найдено по запросу «"+html.EscapeString(query)+"».")
+			b.sendHTML(chatID, "Ничего не найдено по запросу «"+html.EscapeString(query)+"».")
 			return
+		}
+		// Telegram rejects a message longer than 4096 characters, so the list
+		// is capped and the rest is only counted.
+		shown := SortUpcoming(hits)
+		hidden := 0
+		if len(shown) > maxSearchHits {
+			hidden = len(shown) - maxSearchHits
+			shown = shown[:maxSearchHits]
 		}
 		names := b.store.CourseNameMap()
 		var sb strings.Builder
 		sb.WriteString("🔎 <b>Найдено заданий:</b> " + strconv.Itoa(len(hits)) + "\n")
-		for _, a := range SortUpcoming(hits) {
+		for _, a := range shown {
 			sb.WriteString("\n" + b.fm.Line(a, names[a.CourseID], now) + "\n")
 		}
-		_ = b.tg.SendHTML(chatID, strings.TrimRight(sb.String(), "\n"))
+		if hidden > 0 {
+			sb.WriteString("\n\nПоказаны первые " + strconv.Itoa(maxSearchHits) + " из " +
+				strconv.Itoa(len(hits)) + ". Остальные " + strconv.Itoa(hidden) +
+				" смотрите в приложении.")
+		}
+		b.sendHTML(chatID, strings.TrimRight(sb.String(), "\n"))
 	}
 }
 

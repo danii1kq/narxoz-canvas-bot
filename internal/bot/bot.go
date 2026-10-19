@@ -115,22 +115,59 @@ func (b *Bot) handle(u tgbotapi.Update) {
 }
 
 // onMessage routes a text message (reply-keyboard button or command).
+// subscribe registers a chat for notifications. Only private chats are
+// subscribed: personal assignments and grades must not leak into a group, and
+// the subscription is not created by an arbitrary message.
+func (b *Bot) subscribe(chatID int64, private bool) {
+	if !private {
+		return
+	}
+	if err := b.store.AddSubscriber(chatID); err != nil {
+		b.log.Error("could not register the subscriber", "chat", chatID, "err", err)
+	}
+}
+
+// groupNotice explains what the bot does (and does not do) in a group chat.
+const groupNotice = "ℹ️ Уведомления о заданиях и оценках бот присылает только в личный чат. " +
+	"Здесь бот отвечает на команды, но сообщения о дедлайнах не публикует."
+
+// sendHTML sends a message and logs a failure instead of dropping it, so a
+// delivery problem shows up in the logs.
+func (b *Bot) sendHTML(chatID int64, text string) {
+	if err := b.tg.SendHTML(chatID, text); err != nil {
+		b.log.Error("send message failed", "chat", chatID, "err", err)
+	}
+}
+
+// sendInline sends a message with an inline keyboard and logs a failure.
+func (b *Bot) sendInline(chatID int64, text string, kb tgbotapi.InlineKeyboardMarkup) {
+	if err := b.tg.SendInline(chatID, text, kb); err != nil {
+		b.log.Error("send message failed", "chat", chatID, "err", err)
+	}
+}
+
+// editInline edits a message and logs a failure instead of dropping it.
+func (b *Bot) editInline(chatID int64, msgID int, text string, kb tgbotapi.InlineKeyboardMarkup) {
+	if err := b.tg.EditInline(chatID, msgID, text, kb); err != nil {
+		b.log.Error("edit message failed", "chat", chatID, "message", msgID, "err", err)
+	}
+}
+
 func (b *Bot) onMessage(m *tgbotapi.Message) {
 	if m.Text == "" {
 		return
 	}
 	chatID := m.Chat.ID
 	text := strings.TrimSpace(m.Text)
+	private := m.Chat.Type == "private"
 
 	// While this chat waits for a Canvas token, every non-command message is
-	// treated as the token (/setup dialog).
-	if b.isPending(chatID) && !strings.HasPrefix(text, "/") {
+	// treated as the token (/setup dialog). Only a private chat qualifies:
+	// in a group the bot must not read and delete somebody else's message.
+	if private && b.isPending(chatID) && !strings.HasPrefix(text, "/") {
 		b.handlePastedToken(chatID, m)
 		return
 	}
-
-	// Register the chat as a subscriber so it receives notifications.
-	_ = b.store.AddSubscriber(chatID)
 
 	// Reply-keyboard buttons (also accept the equivalent text).
 	switch text {
@@ -156,7 +193,7 @@ func (b *Bot) onMessage(m *tgbotapi.Message) {
 		b.commandRefresh(chatID)
 		return
 	case btnSetup:
-		b.startSetup(chatID)
+		b.startSetup(chatID, private)
 		return
 	}
 
@@ -170,7 +207,11 @@ func (b *Bot) onMessage(m *tgbotapi.Message) {
 		arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 		switch cmd {
 		case "/start", "/menu":
+			b.subscribe(chatID, private)
 			b.sendWelcome(chatID)
+			if !private {
+				b.tg.SendHTML(chatID, groupNotice)
+			}
 		case "/help":
 			b.sendHelp(chatID)
 		case "/assignments":
@@ -194,7 +235,7 @@ func (b *Bot) onMessage(m *tgbotapi.Message) {
 		case "/refresh":
 			b.commandRefresh(chatID)
 		case "/setup":
-			b.startSetup(chatID)
+			b.startSetup(chatID, private)
 		case "/canvas":
 			b.sendCanvasStatus(chatID)
 		case "/cancel":
@@ -249,7 +290,7 @@ func (b *Bot) onCallback(cq *tgbotapi.CallbackQuery) {
 		b.doToggleMute(chatID, msgID, cb.param, cq.ID)
 	case "token":
 		b.tg.AnswerCallback(cq.ID, "🔑", false)
-		b.startSetup(chatID)
+		b.startSetup(chatID, cq.Message.Chat.Type == "private")
 	case "sync":
 		b.doSync(chatID, msgID, cq.ID, cb.view, cb.param, cb.page)
 	case "ping":
